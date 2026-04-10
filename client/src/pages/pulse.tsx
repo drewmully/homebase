@@ -47,7 +47,7 @@ interface FocusItem {
   id: string
   title: string
   subtitle: string
-  type: 'subtask' | 'pipeline' | 'invoice'
+  type: 'subtask' | 'pipeline'
   score: number
 }
 
@@ -60,6 +60,7 @@ function FocusEngine() {
   const updateFocus = useUpdateFocusEngine()
   const [doneIds, setDoneIds] = useState<Set<string>>(new Set())
   const [loading, setLoading] = useState(true)
+  const [overdueAlert, setOverdueAlert] = useState<any[]>([])
   const [items, setItems] = useState<FocusItem[]>([])
 
   useEffect(() => {
@@ -67,6 +68,7 @@ function FocusEngine() {
       setLoading(true)
       const now = Date.now()
       const sevenDaysFromNow = new Date(now + 7 * 86400000).toISOString().split('T')[0]
+      const thirtyDaysFromNow = new Date(now + 30 * 86400000).toISOString().split('T')[0]
       const fourteenDaysAgo = new Date(now - 14 * 86400000).toISOString()
 
       const [
@@ -110,17 +112,28 @@ function FocusEngine() {
         if (rockOwner !== ownerName.toLowerCase()) continue
         const dueDate = st.due_date
         const isOverdue = dueDate && dueDate < today
-        const isDueThisWeek = dueDate && dueDate >= today && dueDate <= sevenDaysFromNow
-        if (!isOverdue && !isDueThisWeek) continue
+        const isDueSoon = dueDate && dueDate >= today && dueDate <= thirtyDaysFromNow
+        const isUnscheduled = !dueDate
 
         const rockTitle = st.rocks?.title || 'Unknown Rock'
         const business = st.rocks?.business || ''
+        let score = 0
+        let label = ''
+        if (isOverdue) { score = 150; label = 'OVERDUE' }
+        else if (isDueSoon) { 
+          const daysOut = Math.ceil((new Date(dueDate!).getTime() - now) / 86400000)
+          score = 120 - daysOut  // closer = higher priority
+          label = `due in ${daysOut}d`
+        }
+        else if (isUnscheduled) { score = 80; label = 'unscheduled' }
+        else { continue } // far future, skip
+
         scored.push({
           id: `subtask-${st.id}`,
           title: st.title,
-          subtitle: `Rock: ${rockTitle.substring(0, 28)}${business ? ' · ' + business : ''}`,
+          subtitle: `Rock: ${rockTitle.substring(0, 28)}${business ? ' · ' + business : ''} · ${label}`,
           type: 'subtask',
-          score: isOverdue ? 150 : 100,
+          score,
         })
       }
 
@@ -150,19 +163,10 @@ function FocusEngine() {
         })
       }
 
-      // Overdue invoices (score: 90), upcoming (score: 60)
-      for (const inv of invoicesData || []) {
-        const isOverdue = inv.status === 'overdue'
-        const label = inv.client_name || inv.description || 'Invoice'
-        const amount = inv.amount ? ` · ${fmtMoney(inv.amount)}` : ''
-        const dueLabel = inv.due_date ? ` · due ${inv.due_date}` : ''
-        scored.push({
-          id: `invoice-${inv.id}`,
-          title: `${isOverdue ? 'OVERDUE: ' : 'Due soon: '}${label}${amount}`,
-          subtitle: `Invoice${dueLabel}`,
-          type: 'invoice',
-          score: isOverdue ? 90 : 60,
-        })
+      // Store overdue invoices for alert banner (not in focus items)
+      const overdueInvoices = (invoicesData || []).filter((i: any) => i.status === 'overdue')
+      if (overdueInvoices.length > 0) {
+        setOverdueAlert(overdueInvoices)
       }
 
       scored.sort((a, b) => b.score - a.score)
@@ -531,6 +535,7 @@ function EosScorecard({ entity }: { entity: 'mully' | 'mfs' }) {
   const [rows, setRows] = useState<ScorecardRow[]>([])
   const [entries, setEntries] = useState<ScorecardEntry[]>([])
   const [loading, setLoading] = useState(true)
+  const [overdueAlert, setOverdueAlert] = useState<any[]>([])
 
   const mondays = useMemo(() => getLast4Mondays(), [])
 

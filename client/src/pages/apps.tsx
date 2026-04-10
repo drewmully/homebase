@@ -5,7 +5,7 @@ import { useAppKV } from '@/lib/hooks'
 import {
   Activity, Mountain, AlertTriangle, TrendingUp,
   DollarSign, Bot, Brain, Compass, LayoutGrid,
-  FileText, BarChart2, Megaphone, Clock, Users
+  FileText, BarChart2, Megaphone, Clock, Users, Receipt
 } from 'lucide-react'
 
 // ─────────────────────────────────────────────
@@ -20,6 +20,8 @@ function useAppStats() {
   const [intelCount, setIntelCount] = useState<number | null>(null)
   const [architectCount, setArchitectCount] = useState<number | null>(null)
   const [activeSubCount, setActiveSubCount] = useState<number | null>(null)
+  const [apOverdueCount, setApOverdueCount] = useState<number | null>(null)
+  const [apOverdueAmount, setApOverdueAmount] = useState<number | null>(null)
 
   useEffect(() => {
     supabase.from('outings_pipeline').select('id', { count: 'exact', head: true })
@@ -32,6 +34,18 @@ function useAppStats() {
       .then(({ count }) => setArchitectCount(count ?? null))
     supabase.from('subscribers').select('id', { count: 'exact', head: true }).eq('status', 'active')
       .then(({ count }) => setActiveSubCount(count ?? null))
+    // AP overdue invoices
+    const today = new Date().toISOString().split('T')[0]
+    supabase.from('invoices').select('amount').neq('status', 'paid').lt('due_date', today)
+      .then(({ data }) => {
+        if (data) {
+          setApOverdueCount(data.length)
+          setApOverdueAmount(data.reduce((s: number, r: any) => s + (r.amount || 0), 0))
+        } else {
+          setApOverdueCount(0)
+          setApOverdueAmount(0)
+        }
+      })
   }, [])
 
   // Health score
@@ -86,6 +100,8 @@ function useAppStats() {
     architectCount,
     cashBal,
     activeSubCount,
+    apOverdueCount,
+    apOverdueAmount,
   }
 }
 
@@ -262,6 +278,17 @@ export default function AppsPage() {
       stat: 'Coming',
       path: '/marketing',
       comingSoon: true,
+    },
+    {
+      id: 'ap',
+      icon: Receipt,
+      name: 'Accounts Payable',
+      stat: stats.apOverdueCount !== null
+        ? stats.apOverdueCount > 0
+          ? `${stats.apOverdueCount} overdue · $${stats.apOverdueAmount !== null ? (stats.apOverdueAmount >= 1000 ? (stats.apOverdueAmount / 1000).toFixed(1) + 'K' : stats.apOverdueAmount) : '0'}`
+          : 'All clear'
+        : '...',
+      path: '/ap',
     },
   ]
 
