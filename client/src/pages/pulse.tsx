@@ -16,18 +16,18 @@ function fmtMoney(v: number) {
   return `$${v.toFixed(0)}`
 }
 
-function getLast4Mondays() {
+function getScoreWeeks() {
+  // Start from 4/6/2026 (first week of data), show 4 weeks
   const mondays: Date[] = []
   const today = new Date()
-  // Find this week's Monday
   const dayOfWeek = today.getDay()
   const thisMonday = new Date(today)
   thisMonday.setDate(today.getDate() - (dayOfWeek === 0 ? 6 : dayOfWeek - 1))
   thisMonday.setHours(0, 0, 0, 0)
-  // Show this week + 3 previous weeks
-  for (let i = 3; i >= 0; i--) {
+  // Show this week and next 3 weeks
+  for (let i = 0; i < 4; i++) {
     const d = new Date(thisMonday)
-    d.setDate(thisMonday.getDate() - i * 7)
+    d.setDate(thisMonday.getDate() + i * 7)
     mondays.push(d)
   }
   return mondays
@@ -534,6 +534,58 @@ function ScorecardCell({
 }
 
 
+// Format scorecard values based on measurable type
+function formatScorecardValue(value: string | null | undefined, measurable: string, isGoal?: boolean): string {
+  if (!value || value === '—') return '—'
+  const num = parseFloat(value)
+  if (isNaN(num)) return value
+  
+  const isCurrency = measurable.toLowerCase().includes('cash') || 
+    measurable.toLowerCase().includes('spend') || 
+    measurable.toLowerCase().includes('sales') || 
+    measurable.toLowerCase().includes('cost') ||
+    measurable.toLowerCase().includes('revenue')
+  const isPercent = measurable.includes('%') || 
+    measurable.toLowerCase().includes('converted') ||
+    measurable.toLowerCase().includes('convert')
+  const isDays = measurable.toLowerCase().includes('ship time')
+  
+  if (isCurrency) {
+    const abs = Math.abs(num)
+    const formatted = abs >= 1000 ? `$${(abs/1000).toFixed(abs >= 10000 ? 0 : 1)}K` : `$${abs.toFixed(0)}`
+    return num < 0 ? `-${formatted}` : formatted
+  }
+  if (isPercent) return isGoal ? value : `${num}%`
+  if (isDays) return `${num.toFixed(1)}d`
+  if (num >= 1000) return num.toLocaleString('en-US', {maximumFractionDigits: 0})
+  return value
+}
+
+// Color code value vs goal
+function getGoalColor(value: string | null | undefined, goal: string | null | undefined, measurable: string): string {
+  if (!value || !goal || value === '—') return 'var(--text-muted)'
+  const numVal = parseFloat(value)
+  const numGoal = parseFloat(goal.replace(/[,$%K]/g, ''))
+  if (isNaN(numVal) || isNaN(numGoal) || numGoal === 0) return '#e8e4d9'
+  
+  // Metrics where LOWER is better
+  const lowerIsBetter = measurable.toLowerCase().includes('lost') || 
+    measurable.toLowerCase().includes('cost') ||
+    measurable.toLowerCase().includes('labor') ||
+    measurable.toLowerCase().includes('ship time') ||
+    measurable.toLowerCase().includes('spend')
+  
+  if (lowerIsBetter) {
+    if (numVal <= numGoal) return '#4ade80' // green — at or below target
+    if (numVal <= numGoal * 1.3) return '#C9A84C' // gold — close
+    return '#ef4444' // red — over target
+  } else {
+    if (numVal >= numGoal) return '#4ade80' // green
+    if (numVal >= numGoal * 0.7) return '#C9A84C' // gold
+    return '#ef4444' // red
+  }
+}
+
 function GoalCell({ row, onGoalSave }: { row: ScorecardRow; onGoalSave: (id: string, goal: string) => void }) {
   const [editing, setEditing] = useState(false)
   const [val, setVal] = useState(row.goal || '')
@@ -563,7 +615,7 @@ function GoalCell({ row, onGoalSave }: { row: ScorecardRow; onGoalSave: (id: str
       onClick={() => setEditing(true)}
       title="Click to set goal"
     >
-      {row.goal || '—'}
+      {formatScorecardValue(row.goal, row.measurable || '', true) || '—'}
     </td>
   )
 }
@@ -573,7 +625,7 @@ function EosScorecard({ entity }: { entity: 'mully' | 'mfs' }) {
   const [loading, setLoading] = useState(true)
   const [overdueAlert, setOverdueAlert] = useState<any[]>([])
 
-  const mondays = useMemo(() => getLast4Mondays(), [])
+  const mondays = useMemo(() => getScoreWeeks(), [])
 
   useEffect(() => {
     async function load() {
