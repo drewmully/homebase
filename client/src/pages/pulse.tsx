@@ -1,5 +1,6 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect } from 'react'
 import { useAuth } from '@/lib/auth'
+import { supabase } from '@/lib/supabase'
 import { useAppKV, useUpdateFocusEngine, useResolveIssue } from '@/lib/hooks'
 import { ownerToKey } from '@/lib/supabase'
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceLine, CartesianGrid } from 'recharts'
@@ -19,6 +20,24 @@ function FocusEngine() {
   const updateFocus = useUpdateFocusEngine()
   const resolveIssue = useResolveIssue()
   const [doneIds, setDoneIds] = useState<Set<string>>(new Set())
+  const [subtasks, setSubtasks] = useState<any[]>([])
+  const [stalePipeline, setStalePipeline] = useState<any[]>([])
+
+  // Fetch overdue/upcoming subtasks directly from table
+  useEffect(() => {
+    supabase.from('rock_subtasks').select('*, rocks!inner(title, owner)')
+      .eq('status', 'pending')
+      .lte('due_date', new Date(Date.now() + 7 * 86400000).toISOString().split('T')[0])
+      .order('due_date')
+      .then(({ data }) => { if (data) setSubtasks(data) })
+    // Fetch pipeline deals with no update in 14+ days
+    supabase.from('outings_pipeline').select('*')
+      .in('status', ['pitched', 'negotiating'])
+      .lt('updated_at', new Date(Date.now() - 14 * 86400000).toISOString())
+      .order('value', { ascending: false })
+      .limit(5)
+      .then(({ data }) => { if (data) setStalePipeline(data) })
+  }, [])
 
   const userKey = user?.key || 'drew'
   const loading = issuesLoading || rocksLoading || metricsLoading || focusLoading
@@ -82,6 +101,29 @@ function FocusEngine() {
       }
     }
 
+    // Overdue subtasks — most actionable items
+    for (const st of subtasks) {
+      const rockOwner = st.rocks?.owner ? ownerToKey(st.rocks.owner) : null
+      if (rockOwner !== userKey) continue
+      const dueDate = st.due_date ? new Date(st.due_date) : null
+      const overdue = dueDate && dueDate.getTime() < now
+      scored.push({
+        id: `subtask-${st.id}`, title: st.title,
+        subtitle: `Rock: ${st.rocks?.title?.substring(0, 30)} · ${overdue ? 'OVERDUE' : 'due ' + st.due_date}`,
+        type: 'subtask', score: overdue ? 115 : 85,
+      })
+    }
+
+    // Stale pipeline deals needing follow-up
+    for (const deal of stalePipeline) {
+      const daysSince = Math.floor((now - new Date(deal.updated_at).getTime()) / 86400000)
+      scored.push({
+        id: `deal-${deal.id}`, title: `Follow up: ${deal.name}`,
+        subtitle: `${deal.status} · $${(deal.value/1000).toFixed(0)}K · ${daysSince}d since last update`,
+        type: 'pipeline', score: 75 + Math.min(daysSince, 30),
+      })
+    }
+
     // Metric-driven items
     const churnRate = metricsData?.churn?.monthly_churn_rate || 0
     const payFailRate = metricsData?.payments?.failure_rate || 0
@@ -94,7 +136,7 @@ function FocusEngine() {
 
     scored.sort((a, b) => b.score - a.score)
     return scored.slice(0, 5)
-  }, [issuesKV, rocksKV, metricsData, userKey])
+  }, [issuesKV, rocksKV, metricsData, userKey, subtasks, stalePipeline])
 
   const handleDone = async (item: typeof items[0]) => {
     setDoneIds(prev => new Set(prev).add(item.id))
