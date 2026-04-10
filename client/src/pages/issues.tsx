@@ -163,18 +163,26 @@ export default function IssuesPage() {
   const allIssues = issuesKV?.issues || []
 
   const handleResolve = async (issueId: string) => {
-    const updated = { ...issuesKV }
-    updated.issues = updated.issues.map((i: any) =>
-      i.id === issueId ? { ...i, status: 'resolved', resolved_at: new Date().toISOString() } : i
-    )
-    await supabase.from('app_kv').update({ data: updated }).eq('id', 'eos_issues')
+    // Write to the proper eos_issues TABLE — trigger auto-syncs to app_kv
+    await supabase.from('eos_issues').update({
+      status: 'resolved',
+      resolved_at: new Date().toISOString()
+    }).eq('id', issueId)
     qc.invalidateQueries({ queryKey: ['app_kv', 'eos_issues'] })
   }
 
   const handleAdd = async (newIssue: any) => {
-    const updated = { ...issuesKV }
-    updated.issues = [...(updated.issues || []), newIssue]
-    await supabase.from('app_kv').update({ data: updated }).eq('id', 'eos_issues')
+    // Write to the proper eos_issues TABLE — trigger auto-syncs to app_kv
+    await supabase.from('eos_issues').insert({
+      id: newIssue.id,
+      title: newIssue.title,
+      entity: newIssue.entity,
+      priority: newIssue.priority,
+      owner: newIssue.owner || null,
+      status: 'open',
+      starred: false,
+      created_at: new Date().toISOString()
+    })
     qc.invalidateQueries({ queryKey: ['app_kv', 'eos_issues'] })
   }
 
