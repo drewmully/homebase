@@ -1,203 +1,180 @@
-import { useState, useMemo, useEffect } from 'react'
+import { useState, useMemo, useEffect, useRef } from 'react'
 import { useAuth } from '@/lib/auth'
 import { supabase } from '@/lib/supabase'
-import { useAppKV, useUpdateFocusEngine, useResolveIssue } from '@/lib/hooks'
-import { ownerToKey } from '@/lib/supabase'
+import { useAppKV, useUpdateFocusEngine } from '@/lib/hooks'
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceLine, CartesianGrid } from 'recharts'
-import { Check, TrendingUp, TrendingDown, Flame } from 'lucide-react'
+import { Check, Flame, AlertCircle, HelpCircle } from 'lucide-react'
 
-function SkeletonCard({ className = '' }: { className?: string }) {
-  return <div className={`skeleton rounded-xl h-24 ${className}`} />
+// ─────────────────────────────────────────────
+// Helpers
+// ─────────────────────────────────────────────
+const USER_KEY_TO_OWNER: Record<string, string> = { drew: 'Drew', jack: 'Jack', joe: 'Joe' }
+
+function fmtMoney(v: number) {
+  if (v >= 1_000_000) return `$${(v / 1_000_000).toFixed(1)}M`
+  if (v >= 1_000) return `$${(v / 1_000).toFixed(0)}K`
+  return `$${v.toFixed(0)}`
 }
 
-// --- Focus Engine ---
+function getLast4Mondays(): Date[] {
+  const mondays: Date[] = []
+  const today = new Date()
+  // Find last Monday
+  const day = today.getDay() // 0=Sun
+  const lastMonday = new Date(today)
+  lastMonday.setDate(today.getDate() - ((day === 0 ? 7 : day) - 1))
+  lastMonday.setHours(0, 0, 0, 0)
+  for (let i = 3; i >= 0; i--) {
+    const d = new Date(lastMonday)
+    d.setDate(lastMonday.getDate() - i * 7)
+    mondays.push(d)
+  }
+  return mondays
+}
+
+function formatMonday(d: Date) {
+  return `${d.getMonth() + 1}/${d.getDate()}`
+}
+
+function toISODate(d: Date) {
+  return d.toISOString().split('T')[0]
+}
+
+// ─────────────────────────────────────────────
+// Section 1: Focus Engine
+// ─────────────────────────────────────────────
+interface FocusItem {
+  id: string
+  title: string
+  subtitle: string
+  type: 'subtask' | 'pipeline' | 'invoice'
+  score: number
+}
+
 function FocusEngine() {
   const { user } = useAuth()
-  const { data: issuesKV, isLoading: issuesLoading } = useAppKV('eos_issues')
-  const { data: rocksKV, isLoading: rocksLoading } = useAppKV('rocks')
-  const { data: metricsData, isLoading: metricsLoading } = useAppKV('current_metrics')
-  const { data: focusData, isLoading: focusLoading } = useAppKV('focus_engine')
-  const updateFocus = useUpdateFocusEngine()
-  const resolveIssue = useResolveIssue()
-  const [doneIds, setDoneIds] = useState<Set<string>>(new Set())
-  const [subtasks, setSubtasks] = useState<any[]>([])
-  const [stalePipeline, setStalePipeline] = useState<any[]>([])
-
-  // Fetch overdue/upcoming subtasks directly from table
-  useEffect(() => {
-    supabase.from('rock_subtasks').select('*, rocks!inner(title, owner)')
-      .eq('status', 'pending')
-      .lte('due_date', new Date(Date.now() + 7 * 86400000).toISOString().split('T')[0])
-      .order('due_date')
-      .then(({ data }) => { if (data) setSubtasks(data) })
-    // Fetch pipeline deals with no update in 14+ days
-    supabase.from('outings_pipeline').select('*')
-      .in('status', ['pitched', 'negotiating'])
-      .lt('updated_at', new Date(Date.now() - 14 * 86400000).toISOString())
-      .order('value', { ascending: false })
-      .limit(5)
-      .then(({ data }) => { if (data) setStalePipeline(data) })
-  }, [])
-
   const userKey = user?.key || 'drew'
-  const loading = issuesLoading || rocksLoading || metricsLoading || focusLoading
+  const ownerName = USER_KEY_TO_OWNER[userKey] || 'Drew'
+
+  const { data: focusData } = useAppKV('focus_engine')
+  const updateFocus = useUpdateFocusEngine()
+  const [doneIds, setDoneIds] = useState<Set<string>>(new Set())
+  const [loading, setLoading] = useState(true)
+  const [items, setItems] = useState<FocusItem[]>([])
+
+  useEffect(() => {
+    async function load() {
+      setLoading(true)
+      const now = Date.now()
+      const sevenDaysFromNow = new Date(now + 7 * 86400000).toISOString().split('T')[0]
+      const fourteenDaysAgo = new Date(now - 14 * 86400000).toISOString()
+
+      const [
+        { data: subtasksData },
+        { data: staleOutings },
+        { data: staleMfs },
+        { data: invoicesData },
+      ] = await Promise.all([
+        supabase
+          .from('rock_subtasks')
+          .select('*, rocks!inner(title, owner, business)')
+          .eq('status', 'pending')
+          .order('due_date')
+          .limit(20),
+        supabase
+          .from('outings_pipeline')
+          .select('*')
+          .in('status', ['pitched', 'negotiating'])
+          .lt('updated_at', fourteenDaysAgo)
+          .order('value', { ascending: false })
+          .limit(5),
+        supabase
+          .from('mfs_pipeline')
+          .select('*')
+          .in('status', ['proposal', 'negotiating', 'contacted'])
+          .lt('updated_at', fourteenDaysAgo)
+          .limit(5),
+        supabase
+          .from('invoices')
+          .select('*')
+          .in('status', ['overdue', 'upcoming'])
+          .order('due_date'),
+      ])
+
+      const scored: FocusItem[] = []
+      const today = new Date().toISOString().split('T')[0]
+
+      // Overdue subtasks (score: 150) and due-this-week (score: 100)
+      for (const st of subtasksData || []) {
+        const rockOwner = (st.rocks?.owner || '').toLowerCase()
+        if (rockOwner !== ownerName.toLowerCase()) continue
+        const dueDate = st.due_date
+        const isOverdue = dueDate && dueDate < today
+        const isDueThisWeek = dueDate && dueDate >= today && dueDate <= sevenDaysFromNow
+        if (!isOverdue && !isDueThisWeek) continue
+
+        const rockTitle = st.rocks?.title || 'Unknown Rock'
+        const business = st.rocks?.business || ''
+        scored.push({
+          id: `subtask-${st.id}`,
+          title: st.title,
+          subtitle: `Rock: ${rockTitle.substring(0, 28)}${business ? ' · ' + business : ''}`,
+          type: 'subtask',
+          score: isOverdue ? 150 : 100,
+        })
+      }
+
+      // Stale outings pipeline
+      for (const deal of staleOutings || []) {
+        const daysSince = Math.floor((now - new Date(deal.updated_at).getTime()) / 86400000)
+        const val = deal.value ? ` — ${fmtMoney(deal.value)}` : ''
+        scored.push({
+          id: `outing-${deal.id}`,
+          title: `Follow up: ${deal.name}${val}, ${daysSince}d stale`,
+          subtitle: `Pipeline · Outings`,
+          type: 'pipeline',
+          score: 80,
+        })
+      }
+
+      // Stale MFS pipeline
+      for (const deal of staleMfs || []) {
+        const daysSince = Math.floor((now - new Date(deal.updated_at).getTime()) / 86400000)
+        const val = deal.value ? ` — ${fmtMoney(deal.value)}` : ''
+        scored.push({
+          id: `mfs-${deal.id}`,
+          title: `Follow up: ${deal.name || deal.company || 'Deal'}${val}, ${daysSince}d stale`,
+          subtitle: `Pipeline · MFS`,
+          type: 'pipeline',
+          score: 80,
+        })
+      }
+
+      // Overdue invoices (score: 90), upcoming (score: 60)
+      for (const inv of invoicesData || []) {
+        const isOverdue = inv.status === 'overdue'
+        const label = inv.client_name || inv.description || 'Invoice'
+        const amount = inv.amount ? ` · ${fmtMoney(inv.amount)}` : ''
+        const dueLabel = inv.due_date ? ` · due ${inv.due_date}` : ''
+        scored.push({
+          id: `invoice-${inv.id}`,
+          title: `${isOverdue ? 'OVERDUE: ' : 'Due soon: '}${label}${amount}`,
+          subtitle: `Invoice${dueLabel}`,
+          type: 'invoice',
+          score: isOverdue ? 90 : 60,
+        })
+      }
+
+      scored.sort((a, b) => b.score - a.score)
+      setItems(scored.slice(0, 5))
+      setLoading(false)
+    }
+    load()
+  }, [ownerName])
 
   const userFocus = focusData?.users?.[userKey] || { streak: 0, xp: 0, level: 'Bogey' }
 
-  const items = useMemo(() => {
-    const scored: Array<{
-      id: string; title: string; subtitle: string; priority?: string; entity?: string; type: string; score: number
-    }> = []
-    const now = Date.now()
-
-    // ── Compute health scores for multiplier logic ──
-    // Traction (0-25)
-    let traction = 0
-    const rocksForHealth = rocksKV?.rocks || []
-    for (const r of rocksForHealth) {
-      if (r.status === 'done') traction += 15
-      else if (r.status === 'on_track') traction += 10
-    }
-    traction = Math.min(25, traction)
-
-    // Data (0-25)
-    let dataScore = 0
-    const churnForHealth = metricsData?.churn?.monthly_churn_rate || 0
-    const payFailForHealth = metricsData?.payments?.failure_rate || 0
-    const subsForHealth = metricsData?.snapshots?.[metricsData.snapshots.length - 1]?.active || 0
-    const revForHealth = metricsData?.revenue?.revenue_7d || 0
-    const aovForHealth = metricsData?.revenue?.aov_7d || 0
-    if (churnForHealth < 5) dataScore += 8; else if (churnForHealth < 10) dataScore += 4
-    if (payFailForHealth < 10) dataScore += 5; else if (payFailForHealth < 30) dataScore += 2
-    if (subsForHealth > 1000) dataScore += 4
-    if (revForHealth > 0) dataScore += 4
-    if (aovForHealth > 100) dataScore += 4
-    dataScore = Math.min(25, dataScore)
-
-    // Cash (0-25) — fixed heuristic
-    const cashScore = 20 // approximate stable
-
-    // Issues (0-25)
-    let issuesScore = 25
-    const issuesForHealth = issuesKV?.issues || []
-    for (const issue of issuesForHealth) {
-      if (issue.status === 'resolved') continue
-      if (issue.priority === 'P0') issuesScore -= 4
-      else if (issue.priority === 'P1') issuesScore -= 1
-    }
-    const weekAgoH = Date.now() - 7 * 24 * 60 * 60 * 1000
-    let resolvedBonusH = 0
-    for (const issue of issuesForHealth) {
-      if (issue.status === 'resolved' && issue.resolved_at && new Date(issue.resolved_at).getTime() > weekAgoH) {
-        resolvedBonusH += 2
-      }
-    }
-    issuesScore = Math.min(25, Math.max(0, issuesScore + Math.min(5, resolvedBonusH)))
-
-    const healthScores = { traction, data: dataScore, cash: cashScore, issues: issuesScore }
-
-    // Health multiplier: if component < 8 → 2x, if < 15 → 1.5x, else 1x
-    const getMultiplier = (component: 'traction' | 'data' | 'cash' | 'issues'): number => {
-      const v = healthScores[component]
-      if (v < 8) return 2.0
-      if (v < 15) return 1.5
-      return 1.0
-    }
-
-    // Issues from app_kv.eos_issues.issues
-    const issues = issuesKV?.issues || []
-    for (const issue of issues) {
-      if (issue.status === 'resolved') continue
-      const created = issue.created_at ? new Date(issue.created_at).getTime() : now
-      const daysSince = Math.max(0, Math.floor((now - created) / (1000 * 60 * 60 * 24)))
-      const issueOwnerKey = issue.owner ? ownerToKey(issue.owner) : null
-      const multiplier = getMultiplier('issues')
-
-      if (issue.priority === 'P0') {
-        if (issueOwnerKey === userKey) {
-          scored.push({
-            id: issue.id, title: issue.title,
-            subtitle: `P0 · ${daysSince}d open`,
-            priority: 'P0', entity: issue.entity, type: 'issue',
-            score: Math.round((100 + daysSince * 2) * multiplier),
-          })
-        } else if (!issue.owner || issue.owner === 'Unassigned') {
-          scored.push({
-            id: issue.id, title: issue.title,
-            subtitle: `P0 · Unassigned · ${daysSince}d`,
-            priority: 'P0', entity: issue.entity, type: 'issue',
-            score: Math.round(60 * multiplier),
-          })
-        }
-      } else if (issue.priority === 'P1' && issueOwnerKey === userKey) {
-        scored.push({
-          id: issue.id, title: issue.title,
-          subtitle: `P1 · ${daysSince}d open`,
-          priority: 'P1', entity: issue.entity, type: 'issue',
-          score: Math.round((50 + daysSince) * multiplier),
-        })
-      }
-    }
-
-    // Rocks from app_kv.rocks.rocks
-    const rocks = rocksKV?.rocks || []
-    for (const rock of rocks) {
-      const rockOwnerKey = rock.owner ? ownerToKey(rock.owner) : null
-      if (rockOwnerKey !== userKey) continue
-      if (rock.status === 'done') continue
-      const statusScores: Record<string, number> = { at_risk: 120, push_now: 90, needs_focus: 60 }
-      const s = statusScores[rock.status]
-      if (s) {
-        const multiplier = getMultiplier('traction')
-        scored.push({
-          id: `rock-${rock.id}`, title: rock.title,
-          subtitle: `Rock · ${rock.status.replace('_', ' ')}`,
-          entity: rock.business, type: 'rock', score: Math.round(s * multiplier),
-        })
-      }
-    }
-
-    // Overdue subtasks — most actionable items (Traction component)
-    for (const st of subtasks) {
-      const rockOwner = st.rocks?.owner ? ownerToKey(st.rocks.owner) : null
-      if (rockOwner !== userKey) continue
-      const dueDate = st.due_date ? new Date(st.due_date) : null
-      const overdue = dueDate && dueDate.getTime() < now
-      const multiplier = getMultiplier('traction')
-      scored.push({
-        id: `subtask-${st.id}`, title: st.title,
-        subtitle: `Rock: ${st.rocks?.title?.substring(0, 30)} · ${overdue ? 'OVERDUE' : 'due ' + st.due_date}`,
-        type: 'subtask', score: Math.round((overdue ? 115 : 85) * multiplier),
-      })
-    }
-
-    // Stale pipeline deals needing follow-up (Data component — deal tracking)
-    for (const deal of stalePipeline) {
-      const daysSince = Math.floor((now - new Date(deal.updated_at).getTime()) / 86400000)
-      const multiplier = getMultiplier('data')
-      scored.push({
-        id: `deal-${deal.id}`, title: `Follow up: ${deal.name}`,
-        subtitle: `${deal.status} · $${(deal.value/1000).toFixed(0)}K · ${daysSince}d since last update`,
-        type: 'pipeline', score: Math.round((75 + Math.min(daysSince, 30)) * multiplier),
-      })
-    }
-
-    // Metric-driven items (Data component)
-    const churnRate = metricsData?.churn?.monthly_churn_rate || 0
-    const payFailRate = metricsData?.payments?.failure_rate || 0
-    const dataMultiplier = getMultiplier('data')
-    if (churnRate > 10) {
-      scored.push({ id: 'metric-churn', title: 'Address churn rate', subtitle: `Churn at ${churnRate}%`, type: 'metric', score: Math.round(80 * dataMultiplier) })
-    }
-    if (payFailRate > 40) {
-      scored.push({ id: 'metric-payfail', title: 'Fix payment failures', subtitle: `Failure rate ${payFailRate}%`, type: 'metric', score: Math.round(70 * dataMultiplier) })
-    }
-
-    scored.sort((a, b) => b.score - a.score)
-    return scored.slice(0, 5)
-  }, [issuesKV, rocksKV, metricsData, userKey, subtasks, stalePipeline])
-
-  const handleDone = async (item: typeof items[0]) => {
+  const handleDone = async (item: FocusItem) => {
     setDoneIds(prev => new Set(prev).add(item.id))
     if (focusData) {
       const updated = JSON.parse(JSON.stringify(focusData))
@@ -206,108 +183,112 @@ function FocusEngine() {
       updated.users[userKey].xp = (updated.users[userKey].xp || 0) + 10
       updateFocus.mutate({ data: updated })
     }
-    if (item.type === 'issue') {
-      const realId = item.id // eos-xxx format
-      resolveIssue.mutate({ id: realId })
+    // If subtask, mark done in DB
+    if (item.type === 'subtask') {
+      const subtaskId = item.id.replace('subtask-', '')
+      await supabase
+        .from('rock_subtasks')
+        .update({ status: 'done', completed_at: new Date().toISOString() })
+        .eq('id', subtaskId)
     }
   }
 
-  if (loading) {
-    return <div className="space-y-2">{[1,2,3].map(i => <SkeletonCard key={i} />)}</div>
-  }
+  const visibleItems = items.filter(it => !doneIds.has(it.id))
 
   return (
     <div>
-      <div className="flex items-center justify-between mb-4">
+      {/* Streak row */}
+      <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-2 text-sm" style={{ color: 'var(--gold)' }}>
-          <Flame size={16} />
+          <Flame size={15} />
           <span className="font-semibold">{userFocus.streak || 0}-day streak</span>
         </div>
-        <div className="text-sm" style={{ color: 'var(--text-muted)' }}>
-          Level {userFocus.level || 'Bogey'} · {userFocus.xp || 0} XP
+        <div className="text-xs" style={{ color: 'var(--text-muted)' }}>
+          {userFocus.level || 'Bogey'} · {userFocus.xp || 0} XP
         </div>
       </div>
 
-      <div className="space-y-2">
-        {items.length === 0 && (
-          <div className="text-center py-8" style={{ color: 'var(--text-muted)' }}>
-            <p className="text-sm">All clear — nothing urgent right now.</p>
-          </div>
-        )}
-        {items.filter(it => !doneIds.has(it.id)).map((item, i) => (
-          <div
-            key={item.id}
-            data-testid={`focus-card-${item.id}`}
-            className="rounded-xl p-4 flex items-center gap-4 transition-all duration-300"
-            style={{
-              background: 'var(--surface-card)',
-              border: i === 0 ? '1px solid var(--gold)' : '1px solid hsl(45 10% 20%)',
-              borderLeftWidth: i === 0 ? '3px' : '1px',
-              borderLeftColor: i === 0 ? 'var(--gold)' : 'hsl(45 10% 20%)',
-            }}
-          >
+      {loading ? (
+        <div className="space-y-2">
+          {[1, 2, 3].map(i => (
+            <div key={i} className="skeleton rounded-lg h-14" />
+          ))}
+        </div>
+      ) : visibleItems.length === 0 ? (
+        <div
+          className="rounded-xl px-5 py-6 text-center text-sm"
+          style={{ background: 'var(--surface-card)', border: '1px solid hsl(45 10% 18%)', color: 'var(--text-muted)' }}
+        >
+          All clear — no pending tasks right now.
+        </div>
+      ) : (
+        <div className="space-y-1.5">
+          {visibleItems.map((item, i) => (
             <div
-              className="w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0"
+              key={item.id}
+              data-testid={`focus-card-${item.id}`}
+              className="rounded-xl flex items-center gap-3 transition-all duration-200"
               style={{
-                background: i === 0 ? 'var(--gold)' : 'transparent',
-                color: i === 0 ? 'var(--surface-darkest)' : 'var(--text-muted)',
-                border: i === 0 ? 'none' : '1px solid hsl(45 10% 25%)',
+                background: 'var(--surface-card)',
+                border: i === 0 ? '1px solid var(--gold)' : '1px solid hsl(45 10% 20%)',
+                borderLeftWidth: i === 0 ? '3px' : '1px',
+                borderLeftColor: i === 0 ? 'var(--gold)' : 'hsl(45 10% 20%)',
+                padding: '10px 12px',
               }}
             >
-              {i + 1}
-            </div>
-            <div className="flex-1 min-w-0">
-              <div className="flex items-center gap-2 mb-0.5">
-                <span className="text-sm font-medium truncate" style={{ color: 'var(--text-primary)' }}>{item.title}</span>
-                {item.priority && (
-                  <span
-                    className="text-[10px] font-bold px-1.5 py-0.5 rounded flex-shrink-0"
-                    style={{
-                      background: item.priority === 'P0' ? 'rgba(239,68,68,0.15)' : 'rgba(245,158,11,0.15)',
-                      color: item.priority === 'P0' ? 'var(--error)' : 'var(--warning)',
-                    }}
-                  >
-                    {item.priority}
-                  </span>
-                )}
+              {/* Number */}
+              <div
+                className="w-6 h-6 rounded-full flex items-center justify-center text-[11px] font-bold flex-shrink-0"
+                style={{
+                  background: i === 0 ? 'var(--gold)' : 'transparent',
+                  color: i === 0 ? 'var(--surface-darkest)' : 'var(--text-muted)',
+                  border: i === 0 ? 'none' : '1px solid hsl(45 10% 28%)',
+                }}
+              >
+                {i + 1}
               </div>
-              <div className="flex items-center gap-2">
-                <span className="text-xs" style={{ color: 'var(--text-muted)' }}>{item.subtitle}</span>
-                {item.entity && (
-                  <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: 'hsl(45 10% 18%)', color: 'var(--text-muted)' }}>
-                    {item.entity}
-                  </span>
-                )}
+
+              {/* Content */}
+              <div className="flex-1 min-w-0">
+                <div className="text-sm font-medium leading-snug truncate" style={{ color: 'var(--text-primary)' }}>
+                  {item.title}
+                </div>
+                <div className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>
+                  {item.subtitle}
+                </div>
               </div>
+
+              {/* Done button */}
+              <button
+                onClick={() => handleDone(item)}
+                data-testid={`button-done-${item.id}`}
+                className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium transition-all duration-200 flex-shrink-0"
+                style={{
+                  background: 'rgba(74,222,128,0.08)',
+                  color: 'var(--success)',
+                  border: '1px solid rgba(74,222,128,0.2)',
+                }}
+              >
+                <Check size={12} />
+                Done
+              </button>
             </div>
-            <button
-              onClick={() => handleDone(item)}
-              data-testid={`button-done-${item.id}`}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all duration-200 touch-target flex-shrink-0"
-              style={{
-                background: 'rgba(74, 222, 128, 0.1)',
-                color: 'var(--success)',
-                border: '1px solid rgba(74, 222, 128, 0.2)',
-              }}
-            >
-              <Check size={14} /> Done
-            </button>
-          </div>
-        ))}
-      </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
 
-// --- Health Score Ring ---
+// ─────────────────────────────────────────────
+// Section 2: Health Score Ring
+// ─────────────────────────────────────────────
 function HealthScore() {
   const { data: metricsData } = useAppKV('current_metrics')
   const { data: issuesKV } = useAppKV('eos_issues')
   const { data: rocksKV } = useAppKV('rocks')
-  const [expanded, setExpanded] = useState<string | null>(null)
 
   const scores = useMemo(() => {
-    // Traction (25)
     let traction = 0
     const rocks = rocksKV?.rocks || []
     for (const r of rocks) {
@@ -316,7 +297,6 @@ function HealthScore() {
     }
     traction = Math.min(25, traction)
 
-    // Data (25)
     let dataScore = 0
     const churn = metricsData?.churn?.monthly_churn_rate || 0
     const payFail = metricsData?.payments?.failure_rate || 0
@@ -330,16 +310,14 @@ function HealthScore() {
     if (aov > 100) dataScore += 4
     dataScore = Math.min(25, dataScore)
 
-    // Cash (25)
     let cashScore = 0
-    const cashBal = 29163 // approximate from real_cash
+    const cashBal = 29163
     if (cashBal > 50000) cashScore = 15
     else if (cashBal > 20000) cashScore = 10
     else if (cashBal > 10000) cashScore = 5
-    cashScore += 5 + 5
+    cashScore += 10
     cashScore = Math.min(25, cashScore)
 
-    // Issues (25)
     let issuesScore = 25
     const issues = issuesKV?.issues || []
     for (const issue of issues) {
@@ -371,7 +349,7 @@ function HealthScore() {
   ]
 
   return (
-    <div className="rounded-xl p-6" style={{ background: 'var(--surface-card)', border: '1px solid hsl(45 10% 20%)' }}>
+    <div className="rounded-xl p-5" style={{ background: 'var(--surface-card)', border: '1px solid hsl(45 10% 20%)' }}>
       <div className="flex items-center gap-6">
         <div className="relative flex-shrink-0">
           <svg width="120" height="120" viewBox="0 0 120 120">
@@ -413,35 +391,297 @@ function HealthScore() {
   )
 }
 
-// --- KPI Card ---
-function KPICard({ label, value, subtitle, delta, deltaPositive }: {
-  label: string; value: string; subtitle?: string; delta?: string; deltaPositive?: boolean
+// ─────────────────────────────────────────────
+// Section 3: EOS Scorecard
+// ─────────────────────────────────────────────
+
+interface ScorecardRow {
+  id: string
+  entity: string
+  label: string
+  goal: string | null
+  data_source: string
+  auto_fill_query: string | null
+  sort_order: number
+}
+
+interface ScorecardEntry {
+  scorecard_id: string
+  week_start: string
+  value: string | null
+  auto_value: string | null
+}
+
+function ScorecardCell({
+  row,
+  weekStart,
+  entry,
+  onSave,
+}: {
+  row: ScorecardRow
+  weekStart: string
+  entry: ScorecardEntry | undefined
+  onSave: (scorecardId: string, weekStart: string, value: string) => void
 }) {
+  const isManual = row.data_source === 'manual' || !row.auto_fill_query
+  const [editing, setEditing] = useState(false)
+  const [inputVal, setInputVal] = useState('')
+  const inputRef = useRef<HTMLInputElement>(null)
+  const [tooltip, setTooltip] = useState(false)
+
+  const displayVal = entry?.auto_value ?? entry?.value
+
+  useEffect(() => {
+    if (editing && inputRef.current) inputRef.current.focus()
+  }, [editing])
+
+  const commit = () => {
+    if (inputVal.trim()) {
+      onSave(row.id, weekStart, inputVal.trim())
+    }
+    setEditing(false)
+    setInputVal('')
+  }
+
+  if (!isManual && displayVal) {
+    return (
+      <td
+        className="text-center px-2 py-1.5 text-xs font-medium"
+        style={{ color: 'var(--gold)', borderRight: '1px solid hsl(45 10% 20%)' }}
+      >
+        {displayVal}
+      </td>
+    )
+  }
+
+  if (!isManual && !displayVal) {
+    return (
+      <td
+        className="text-center px-2 py-1.5 text-xs"
+        style={{ color: 'hsl(45 10% 35%)', borderRight: '1px solid hsl(45 10% 20%)' }}
+      >
+        AUTO
+      </td>
+    )
+  }
+
+  // Manual cell
+  if (editing) {
+    return (
+      <td style={{ borderRight: '1px solid hsl(45 10% 20%)', padding: '2px 4px' }}>
+        <input
+          ref={inputRef}
+          value={inputVal}
+          onChange={e => setInputVal(e.target.value)}
+          onBlur={commit}
+          onKeyDown={e => { if (e.key === 'Enter') commit(); if (e.key === 'Escape') { setEditing(false); setInputVal('') } }}
+          className="w-full text-center text-xs rounded px-1 py-0.5 outline-none"
+          style={{
+            background: 'hsl(45 10% 16%)',
+            color: 'var(--text-primary)',
+            border: '1px solid var(--gold)',
+            minWidth: 0,
+          }}
+          placeholder="—"
+        />
+      </td>
+    )
+  }
+
+  if (displayVal) {
+    return (
+      <td
+        className="text-center px-2 py-1.5 text-xs cursor-pointer hover:bg-white/5 transition-colors"
+        style={{ color: 'var(--text-primary)', borderRight: '1px solid hsl(45 10% 20%)' }}
+        onClick={() => { setEditing(true); setInputVal(displayVal) }}
+      >
+        {displayVal}
+      </td>
+    )
+  }
+
+  // Empty manual cell — show "?" with tooltip on hover
   return (
-    <div
-      data-testid={`kpi-${label.toLowerCase().replace(/\s/g, '-')}`}
-      className="rounded-xl p-4"
-      style={{ background: 'var(--surface-card)', border: '1px solid hsl(45 10% 20%)' }}
+    <td
+      className="text-center px-2 py-1.5 cursor-pointer hover:bg-white/5 transition-colors relative"
+      style={{ borderRight: '1px solid hsl(45 10% 20%)' }}
+      onClick={() => setEditing(true)}
+      onMouseEnter={() => setTooltip(true)}
+      onMouseLeave={() => setTooltip(false)}
     >
-      <div className="text-xs mb-2" style={{ color: 'var(--text-muted)' }}>{label}</div>
-      <div className="text-lg font-semibold" style={{ color: 'var(--text-primary)' }}>{value}</div>
-      <div className="flex items-center gap-2 mt-1">
-        {subtitle && <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>{subtitle}</span>}
-        {delta && (
-          <span
-            className="text-[11px] font-medium flex items-center gap-0.5"
-            style={{ color: deltaPositive ? 'var(--success)' : 'var(--error)' }}
-          >
-            {deltaPositive ? <TrendingUp size={12} /> : <TrendingDown size={12} />}
-            {delta}
-          </span>
-        )}
+      <span style={{ color: 'hsl(45 10% 35%)' }}>—</span>
+      {tooltip && (
+        <div
+          className="absolute z-50 left-1/2 -translate-x-1/2 bottom-full mb-1 text-[10px] rounded px-2 py-1 whitespace-nowrap"
+          style={{
+            background: '#1a1a18',
+            border: '1px solid hsl(45 10% 28%)',
+            color: 'var(--text-muted)',
+            boxShadow: '0 4px 12px rgba(0,0,0,0.4)',
+          }}
+        >
+          Click to enter · Source: {row.data_source}
+        </div>
+      )}
+    </td>
+  )
+}
+
+function EosScorecard({ entity }: { entity: 'mully' | 'mfs' }) {
+  const [rows, setRows] = useState<ScorecardRow[]>([])
+  const [entries, setEntries] = useState<ScorecardEntry[]>([])
+  const [loading, setLoading] = useState(true)
+
+  const mondays = useMemo(() => getLast4Mondays(), [])
+
+  useEffect(() => {
+    async function load() {
+      setLoading(true)
+      const fourWeeksAgo = toISODate(mondays[0])
+      const [{ data: sc }, { data: en }] = await Promise.all([
+        supabase.from('scorecard').select('*').order('entity').order('sort_order'),
+        supabase.from('scorecard_entries').select('*').gte('week_start', fourWeeksAgo),
+      ])
+      setRows(sc || [])
+      setEntries(en || [])
+      setLoading(false)
+    }
+    load()
+  }, [])
+
+  const handleSave = async (scorecardId: string, weekStart: string, value: string) => {
+    // Optimistic update
+    setEntries(prev => {
+      const existing = prev.find(e => e.scorecard_id === scorecardId && e.week_start === weekStart)
+      if (existing) {
+        return prev.map(e =>
+          e.scorecard_id === scorecardId && e.week_start === weekStart
+            ? { ...e, value }
+            : e
+        )
+      }
+      return [...prev, { scorecard_id: scorecardId, week_start: weekStart, value, auto_value: null }]
+    })
+    // Upsert to DB
+    await supabase.from('scorecard_entries').upsert(
+      { scorecard_id: scorecardId, week_start: weekStart, value },
+      { onConflict: 'scorecard_id,week_start' }
+    )
+  }
+
+  const entityRows = rows.filter(r => r.entity?.toLowerCase() === entity)
+  const entityLabel = entity === 'mully' ? 'MULLY (eCOMMERCE)' : 'MFS (3PL)'
+
+  const getEntry = (rowId: string, weekStart: string) =>
+    entries.find(e => e.scorecard_id === rowId && e.week_start === weekStart)
+
+  if (loading) {
+    return (
+      <div className="space-y-2">
+        {[1, 2, 3, 4].map(i => <div key={i} className="skeleton rounded h-8" />)}
       </div>
+    )
+  }
+
+  if (entityRows.length === 0) {
+    return (
+      <div className="text-xs py-4 text-center" style={{ color: 'var(--text-muted)' }}>
+        No scorecard rows for {entity.toUpperCase()} yet.
+      </div>
+    )
+  }
+
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-xs" style={{ borderCollapse: 'collapse' }}>
+        <thead>
+          {/* Entity header row */}
+          <tr>
+            <td
+              colSpan={mondays.length + 2}
+              className="px-3 py-2 font-semibold text-[11px] tracking-wider"
+              style={{
+                background: '#1a1a18',
+                color: 'var(--gold)',
+                borderTop: '1px solid hsl(45 10% 22%)',
+                borderBottom: '1px solid hsl(45 10% 22%)',
+              }}
+            >
+              {entityLabel} — {entityRows.length} measurables
+            </td>
+          </tr>
+          {/* Column headers */}
+          <tr style={{ background: '#1a1a18' }}>
+            <th
+              className="text-left px-3 py-2 font-semibold text-[10px] uppercase tracking-wider"
+              style={{ color: 'var(--gold)', borderRight: '1px solid hsl(45 10% 20%)', minWidth: 180 }}
+            >
+              Measurable
+            </th>
+            <th
+              className="text-center px-3 py-2 font-semibold text-[10px] uppercase tracking-wider"
+              style={{ color: 'var(--gold)', borderRight: '1px solid hsl(45 10% 20%)', minWidth: 60 }}
+            >
+              Goal
+            </th>
+            {mondays.map(mon => (
+              <th
+                key={mon.toISOString()}
+                className="text-center px-2 py-2 font-semibold text-[10px]"
+                style={{ color: 'var(--gold)', borderRight: '1px solid hsl(45 10% 20%)', minWidth: 56 }}
+              >
+                {formatMonday(mon)}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {entityRows.map((row, idx) => (
+            <tr
+              key={row.id}
+              style={{
+                background: idx % 2 === 0 ? 'var(--surface-card)' : 'hsl(45 10% 14%)',
+                borderBottom: '1px solid hsl(45 10% 16%)',
+              }}
+            >
+              {/* Label */}
+              <td
+                className="px-3 py-2"
+                style={{ color: 'var(--text-primary)', borderRight: '1px solid hsl(45 10% 20%)' }}
+              >
+                {row.label}
+              </td>
+              {/* Goal */}
+              <td
+                className="text-center px-2 py-2"
+                style={{ color: 'var(--text-muted)', borderRight: '1px solid hsl(45 10% 20%)' }}
+              >
+                {row.goal || '—'}
+              </td>
+              {/* Week cells */}
+              {mondays.map(mon => {
+                const ws = toISODate(mon)
+                return (
+                  <ScorecardCell
+                    key={ws}
+                    row={row}
+                    weekStart={ws}
+                    entry={getEntry(row.id, ws)}
+                    onSave={handleSave}
+                  />
+                )
+              })}
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   )
 }
 
-// --- Cash Chart ---
+// ─────────────────────────────────────────────
+// Section 4: Cash Chart
+// ─────────────────────────────────────────────
 function CashChart({ entity }: { entity: 'mully' | 'mfs' }) {
   const forecastId = entity === 'mully' ? 'forecast_mully' : 'forecast_mfs'
   const { data: forecastData, isLoading } = useAppKV(forecastId)
@@ -461,7 +701,9 @@ function CashChart({ entity }: { entity: 'mully' | 'mfs' }) {
 
   return (
     <div className="rounded-xl p-5" style={{ background: 'var(--surface-card)', border: '1px solid hsl(45 10% 20%)' }}>
-      <div className="text-sm font-medium mb-4" style={{ color: 'var(--text-primary)' }}>13-Week Cash Forecast</div>
+      <div className="text-sm font-medium mb-4" style={{ color: 'var(--text-primary)' }}>
+        13-Week Cash Forecast
+      </div>
       <ResponsiveContainer width="100%" height={200}>
         <AreaChart data={chartData} margin={{ top: 5, right: 5, bottom: 5, left: 5 }}>
           <defs>
@@ -478,10 +720,15 @@ function CashChart({ entity }: { entity: 'mully' | 'mfs' }) {
             formatter={(value: number) => [`$${value.toLocaleString()}`, 'Balance']}
           />
           {hasNegative && <ReferenceLine y={0} stroke="#ef4444" strokeDasharray="6 3" strokeWidth={1.5} />}
-          <Area type="monotone" dataKey="balance" stroke="#C9A84C" fill="url(#goldGrad)" strokeWidth={2}
+          <Area
+            type="monotone"
+            dataKey="balance"
+            stroke="#C9A84C"
+            fill="url(#goldGrad)"
+            strokeWidth={2}
             dot={(props: any) => {
-              if (props.payload?.balance < 0) return <circle cx={props.cx} cy={props.cy} r={4} fill="#ef4444" stroke="none" />
-              return <circle cx={props.cx} cy={props.cy} r={0} />
+              if (props.payload?.balance < 0) return <circle key={props.key} cx={props.cx} cy={props.cy} r={4} fill="#ef4444" stroke="none" />
+              return <circle key={props.key} cx={props.cx} cy={props.cy} r={0} />
             }}
           />
         </AreaChart>
@@ -490,43 +737,21 @@ function CashChart({ entity }: { entity: 'mully' | 'mfs' }) {
   )
 }
 
-// --- Main Pulse Page ---
+// ─────────────────────────────────────────────
+// Main Pulse Page
+// ─────────────────────────────────────────────
 export default function PulsePage() {
   const [entity, setEntity] = useState<'mully' | 'mfs'>('mully')
-  const { data: metricsData, isLoading: metricsLoading } = useAppKV('current_metrics')
-
-  // Pull metrics from the real structure
-  const latest = metricsData?.snapshots?.[metricsData.snapshots?.length - 1]
-  const prevSnapshot = metricsData?.snapshots?.[metricsData.snapshots?.length - 2]
-  const rev = metricsData?.revenue
-  const payments = metricsData?.payments
-  const trends = metricsData?.trends
-
-  const fmtMoney = (v: number) => v >= 1000 ? `$${(v / 1000).toFixed(1)}K` : `$${v.toFixed(0)}`
-  const fmtPct = (v: number) => `${v.toFixed(1)}%`
-
-  const kpiCards = metricsData ? [
-    { label: 'Revenue', value: fmtMoney(rev?.revenue_7d || 0), subtitle: '7-day', delta: trends?.revenue_7d_change ? `+$${trends.revenue_7d_change.toFixed(0)}` : undefined, deltaPositive: true },
-    { label: 'Orders', value: String(rev?.orders_7d || latest?.orders || 0), subtitle: '7-day' },
-    { label: 'Active Subs', value: (latest?.active || 0).toLocaleString(), delta: trends?.active_change ? `+${trends.active_change}` : undefined, deltaPositive: true },
-    { label: 'AOV', value: `$${(rev?.aov_7d || 0).toFixed(2)}`, subtitle: '7-day' },
-    { label: 'Paused', value: (latest?.paused || 0).toLocaleString() },
-    { label: 'Cancelled', value: (latest?.inactive || 0).toLocaleString() },
-    { label: 'Churn Rate', value: fmtPct(metricsData?.churn?.monthly_churn_rate || 0) },
-    { label: 'Failures', value: fmtPct(payments?.failure_rate || 0), subtitle: `${payments?.unique_subs_failed || 0}/${payments?.unique_subs_billed || 0} subs` },
-    { label: 'Unfulfilled', value: (rev?.unfulfilled || 0).toLocaleString() },
-    { label: 'Est. MRR', value: '$76.6K', subtitle: 'Estimated' },
-    { label: 'Cash', value: '$29,163', subtitle: '4 accounts' },
-  ] : []
 
   return (
     <div className="max-w-6xl mx-auto px-4 md:px-8 py-6 space-y-6">
+      {/* Page header */}
       <div>
         <h1 className="text-lg font-semibold" style={{ color: 'var(--text-primary)' }}>Pulse</h1>
         <p className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>Your daily operations snapshot</p>
       </div>
 
-      {/* Focus Engine */}
+      {/* Section 1: Focus Engine */}
       <section>
         <h2 className="text-sm font-semibold mb-3 flex items-center gap-2" style={{ color: 'var(--text-primary)' }}>
           <span style={{ color: 'var(--gold)' }}>◆</span> Focus Engine
@@ -534,14 +759,14 @@ export default function PulsePage() {
         <FocusEngine />
       </section>
 
-      {/* Entity Toggle */}
+      {/* Section 2: Entity Toggle + Health Score */}
       <div className="flex items-center gap-1 p-1 rounded-lg w-fit" style={{ background: 'hsl(45 10% 14%)' }}>
         {(['mully', 'mfs'] as const).map(e => (
           <button
             key={e}
             data-testid={`toggle-entity-${e}`}
             onClick={() => setEntity(e)}
-            className="px-4 py-2 rounded-md text-sm font-medium transition-all duration-200 touch-target"
+            className="px-4 py-2 rounded-md text-sm font-medium transition-all duration-200"
             style={{
               background: entity === e ? 'var(--gold)' : 'transparent',
               color: entity === e ? 'var(--surface-darkest)' : 'var(--text-muted)',
@@ -552,28 +777,24 @@ export default function PulsePage() {
         ))}
       </div>
 
-      {/* Health Score */}
       <section>
         <HealthScore />
       </section>
 
-      {/* KPI Cards */}
+      {/* Section 3: EOS Scorecard */}
       <section>
-        <h2 className="text-sm font-semibold mb-3" style={{ color: 'var(--text-primary)' }}>Key Metrics</h2>
-        {metricsLoading ? (
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-            {[1,2,3,4,5,6,7,8].map(i => <SkeletonCard key={i} />)}
-          </div>
-        ) : (
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-            {kpiCards.map(card => (
-              <KPICard key={card.label} {...card} />
-            ))}
-          </div>
-        )}
+        <h2 className="text-sm font-semibold mb-3 flex items-center gap-2" style={{ color: 'var(--text-primary)' }}>
+          <span style={{ color: 'var(--gold)' }}>◆</span> EOS Scorecard
+        </h2>
+        <div
+          className="rounded-xl overflow-hidden"
+          style={{ border: '1px solid hsl(45 10% 20%)', background: 'var(--surface-card)' }}
+        >
+          <EosScorecard entity={entity} />
+        </div>
       </section>
 
-      {/* Cash Chart */}
+      {/* Section 4: Cash Chart */}
       <section>
         <CashChart entity={entity} />
       </section>
