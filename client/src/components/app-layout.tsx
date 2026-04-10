@@ -3,7 +3,7 @@ import { useAuth } from '@/lib/auth'
 import { useState } from 'react'
 import {
   Activity, Mountain, AlertTriangle, TrendingUp, DollarSign,
-  Bot, Brain, Compass, LogOut, Menu, X
+  LayoutGrid, LogOut, Menu, X
 } from 'lucide-react'
 
 const NAV_ITEMS = [
@@ -12,12 +12,10 @@ const NAV_ITEMS = [
   { path: '/issues', label: 'Issues', icon: AlertTriangle },
   { path: '/pipeline', label: 'Pipeline', icon: TrendingUp },
   { path: '/money', label: 'Money', icon: DollarSign },
-  { path: '/agents', label: 'Agents', icon: Bot },
-  { path: '/intel', label: 'Intel', icon: Brain },
-  { path: '/architect', label: 'Architect', icon: Compass },
+  { path: '/apps', label: 'Apps', icon: LayoutGrid },
 ]
 
-const MOBILE_NAV = NAV_ITEMS.slice(0, 4)
+const MOBILE_NAV = NAV_ITEMS.slice(0, 5)
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   const [location] = useLocation()

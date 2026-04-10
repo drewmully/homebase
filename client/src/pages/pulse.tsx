@@ -50,6 +50,60 @@ function FocusEngine() {
     }> = []
     const now = Date.now()
 
+    // ── Compute health scores for multiplier logic ──
+    // Traction (0-25)
+    let traction = 0
+    const rocksForHealth = rocksKV?.rocks || []
+    for (const r of rocksForHealth) {
+      if (r.status === 'done') traction += 15
+      else if (r.status === 'on_track') traction += 10
+    }
+    traction = Math.min(25, traction)
+
+    // Data (0-25)
+    let dataScore = 0
+    const churnForHealth = metricsData?.churn?.monthly_churn_rate || 0
+    const payFailForHealth = metricsData?.payments?.failure_rate || 0
+    const subsForHealth = metricsData?.snapshots?.[metricsData.snapshots.length - 1]?.active || 0
+    const revForHealth = metricsData?.revenue?.revenue_7d || 0
+    const aovForHealth = metricsData?.revenue?.aov_7d || 0
+    if (churnForHealth < 5) dataScore += 8; else if (churnForHealth < 10) dataScore += 4
+    if (payFailForHealth < 10) dataScore += 5; else if (payFailForHealth < 30) dataScore += 2
+    if (subsForHealth > 1000) dataScore += 4
+    if (revForHealth > 0) dataScore += 4
+    if (aovForHealth > 100) dataScore += 4
+    dataScore = Math.min(25, dataScore)
+
+    // Cash (0-25) — fixed heuristic
+    const cashScore = 20 // approximate stable
+
+    // Issues (0-25)
+    let issuesScore = 25
+    const issuesForHealth = issuesKV?.issues || []
+    for (const issue of issuesForHealth) {
+      if (issue.status === 'resolved') continue
+      if (issue.priority === 'P0') issuesScore -= 4
+      else if (issue.priority === 'P1') issuesScore -= 1
+    }
+    const weekAgoH = Date.now() - 7 * 24 * 60 * 60 * 1000
+    let resolvedBonusH = 0
+    for (const issue of issuesForHealth) {
+      if (issue.status === 'resolved' && issue.resolved_at && new Date(issue.resolved_at).getTime() > weekAgoH) {
+        resolvedBonusH += 2
+      }
+    }
+    issuesScore = Math.min(25, Math.max(0, issuesScore + Math.min(5, resolvedBonusH)))
+
+    const healthScores = { traction, data: dataScore, cash: cashScore, issues: issuesScore }
+
+    // Health multiplier: if component < 8 → 2x, if < 15 → 1.5x, else 1x
+    const getMultiplier = (component: 'traction' | 'data' | 'cash' | 'issues'): number => {
+      const v = healthScores[component]
+      if (v < 8) return 2.0
+      if (v < 15) return 1.5
+      return 1.0
+    }
+
     // Issues from app_kv.eos_issues.issues
     const issues = issuesKV?.issues || []
     for (const issue of issues) {
@@ -57,6 +111,7 @@ function FocusEngine() {
       const created = issue.created_at ? new Date(issue.created_at).getTime() : now
       const daysSince = Math.max(0, Math.floor((now - created) / (1000 * 60 * 60 * 24)))
       const issueOwnerKey = issue.owner ? ownerToKey(issue.owner) : null
+      const multiplier = getMultiplier('issues')
 
       if (issue.priority === 'P0') {
         if (issueOwnerKey === userKey) {
@@ -64,14 +119,14 @@ function FocusEngine() {
             id: issue.id, title: issue.title,
             subtitle: `P0 · ${daysSince}d open`,
             priority: 'P0', entity: issue.entity, type: 'issue',
-            score: 100 + (daysSince * 2),
+            score: Math.round((100 + daysSince * 2) * multiplier),
           })
         } else if (!issue.owner || issue.owner === 'Unassigned') {
           scored.push({
             id: issue.id, title: issue.title,
             subtitle: `P0 · Unassigned · ${daysSince}d`,
             priority: 'P0', entity: issue.entity, type: 'issue',
-            score: 60,
+            score: Math.round(60 * multiplier),
           })
         }
       } else if (issue.priority === 'P1' && issueOwnerKey === userKey) {
@@ -79,7 +134,7 @@ function FocusEngine() {
           id: issue.id, title: issue.title,
           subtitle: `P1 · ${daysSince}d open`,
           priority: 'P1', entity: issue.entity, type: 'issue',
-          score: 50 + daysSince,
+          score: Math.round((50 + daysSince) * multiplier),
         })
       }
     }
@@ -93,45 +148,49 @@ function FocusEngine() {
       const statusScores: Record<string, number> = { at_risk: 120, push_now: 90, needs_focus: 60 }
       const s = statusScores[rock.status]
       if (s) {
+        const multiplier = getMultiplier('traction')
         scored.push({
           id: `rock-${rock.id}`, title: rock.title,
           subtitle: `Rock · ${rock.status.replace('_', ' ')}`,
-          entity: rock.business, type: 'rock', score: s,
+          entity: rock.business, type: 'rock', score: Math.round(s * multiplier),
         })
       }
     }
 
-    // Overdue subtasks — most actionable items
+    // Overdue subtasks — most actionable items (Traction component)
     for (const st of subtasks) {
       const rockOwner = st.rocks?.owner ? ownerToKey(st.rocks.owner) : null
       if (rockOwner !== userKey) continue
       const dueDate = st.due_date ? new Date(st.due_date) : null
       const overdue = dueDate && dueDate.getTime() < now
+      const multiplier = getMultiplier('traction')
       scored.push({
         id: `subtask-${st.id}`, title: st.title,
         subtitle: `Rock: ${st.rocks?.title?.substring(0, 30)} · ${overdue ? 'OVERDUE' : 'due ' + st.due_date}`,
-        type: 'subtask', score: overdue ? 115 : 85,
+        type: 'subtask', score: Math.round((overdue ? 115 : 85) * multiplier),
       })
     }
 
-    // Stale pipeline deals needing follow-up
+    // Stale pipeline deals needing follow-up (Data component — deal tracking)
     for (const deal of stalePipeline) {
       const daysSince = Math.floor((now - new Date(deal.updated_at).getTime()) / 86400000)
+      const multiplier = getMultiplier('data')
       scored.push({
         id: `deal-${deal.id}`, title: `Follow up: ${deal.name}`,
         subtitle: `${deal.status} · $${(deal.value/1000).toFixed(0)}K · ${daysSince}d since last update`,
-        type: 'pipeline', score: 75 + Math.min(daysSince, 30),
+        type: 'pipeline', score: Math.round((75 + Math.min(daysSince, 30)) * multiplier),
       })
     }
 
-    // Metric-driven items
+    // Metric-driven items (Data component)
     const churnRate = metricsData?.churn?.monthly_churn_rate || 0
     const payFailRate = metricsData?.payments?.failure_rate || 0
+    const dataMultiplier = getMultiplier('data')
     if (churnRate > 10) {
-      scored.push({ id: 'metric-churn', title: 'Address churn rate', subtitle: `Churn at ${churnRate}%`, type: 'metric', score: 80 })
+      scored.push({ id: 'metric-churn', title: 'Address churn rate', subtitle: `Churn at ${churnRate}%`, type: 'metric', score: Math.round(80 * dataMultiplier) })
     }
     if (payFailRate > 40) {
-      scored.push({ id: 'metric-payfail', title: 'Fix payment failures', subtitle: `Failure rate ${payFailRate}%`, type: 'metric', score: 70 })
+      scored.push({ id: 'metric-payfail', title: 'Fix payment failures', subtitle: `Failure rate ${payFailRate}%`, type: 'metric', score: Math.round(70 * dataMultiplier) })
     }
 
     scored.sort((a, b) => b.score - a.score)
