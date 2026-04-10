@@ -433,9 +433,10 @@ function ScorecardCell({
   const [editing, setEditing] = useState(false)
   const [inputVal, setInputVal] = useState('')
   const inputRef = useRef<HTMLInputElement>(null)
-  const [tooltip, setTooltip] = useState(false)
 
-  const displayVal = entry?.auto_value ?? entry?.value
+  const rawVal = entry?.value ?? entry?.auto_value ?? null
+  const isFutureWeek = new Date(weekStart) > new Date()
+  const measurable = row.measurable || ''
 
   useEffect(() => {
     if (editing && inputRef.current) inputRef.current.focus()
@@ -449,29 +450,45 @@ function ScorecardCell({
     setInputVal('')
   }
 
-  if (!isManual && displayVal) {
-    return (
-      <td
-        className="text-center px-2 py-1.5 text-xs font-medium"
-        style={{ color: 'var(--gold)', borderRight: '1px solid hsl(45 10% 20%)' }}
-      >
-        {displayVal}
-      </td>
-    )
-  }
-
-  if (!isManual && !displayVal) {
+  // Future weeks with no data — show blank dash
+  if (isFutureWeek && !rawVal) {
     return (
       <td
         className="text-center px-2 py-1.5 text-xs"
-        style={{ color: 'hsl(45 10% 35%)', borderRight: '1px solid hsl(45 10% 20%)' }}
+        style={{ color: 'hsl(45 10% 28%)', borderRight: '1px solid hsl(45 10% 20%)' }}
       >
-        AUTO
+        —
       </td>
     )
   }
 
-  // Manual cell
+  // Has a value — show formatted + colored
+  if (rawVal) {
+    const formatted = formatScorecardValue(rawVal, measurable)
+    const color = getGoalColor(rawVal, row.goal, measurable)
+    return (
+      <td
+        className="text-center px-2 py-1.5 text-xs font-medium cursor-pointer"
+        style={{ color, borderRight: '1px solid hsl(45 10% 20%)' }}
+        onClick={() => { setInputVal(rawVal); setEditing(true) }}
+        title={`Raw: ${rawVal} | Click to edit`}
+      >
+        {editing ? (
+          <input
+            ref={inputRef}
+            value={inputVal}
+            onChange={e => setInputVal(e.target.value)}
+            onBlur={commit}
+            onKeyDown={e => { if (e.key === 'Enter') commit(); if (e.key === 'Escape') setEditing(false) }}
+            className="w-full text-center text-xs bg-transparent border-b outline-none"
+            style={{ color: '#C9A84C', borderColor: '#C9A84C', maxWidth: 70 }}
+          />
+        ) : formatted}
+      </td>
+    )
+  }
+
+  // No value — clickable empty cell for manual entry
   if (editing) {
     return (
       <td style={{ borderRight: '1px solid hsl(45 10% 20%)', padding: '2px 4px' }}>
@@ -480,61 +497,25 @@ function ScorecardCell({
           value={inputVal}
           onChange={e => setInputVal(e.target.value)}
           onBlur={commit}
-          onKeyDown={e => { if (e.key === 'Enter') commit(); if (e.key === 'Escape') { setEditing(false); setInputVal('') } }}
-          className="w-full text-center text-xs rounded px-1 py-0.5 outline-none"
-          style={{
-            background: 'hsl(45 10% 16%)',
-            color: 'var(--text-primary)',
-            border: '1px solid var(--gold)',
-            minWidth: 0,
-          }}
-          placeholder="—"
+          onKeyDown={e => { if (e.key === 'Enter') commit(); if (e.key === 'Escape') setEditing(false) }}
+          className="w-full text-center text-xs bg-transparent border-b outline-none"
+          style={{ color: '#C9A84C', borderColor: 'hsl(45 10% 30%)', maxWidth: 70 }}
         />
       </td>
     )
   }
 
-  if (displayVal) {
-    return (
-      <td
-        className="text-center px-2 py-1.5 text-xs cursor-pointer hover:bg-white/5 transition-colors"
-        style={{ color: 'var(--text-primary)', borderRight: '1px solid hsl(45 10% 20%)' }}
-        onClick={() => { setEditing(true); setInputVal(displayVal) }}
-      >
-        {displayVal}
-      </td>
-    )
-  }
-
-  // Empty manual cell — show "?" with tooltip on hover
   return (
     <td
-      className="text-center px-2 py-1.5 cursor-pointer hover:bg-white/5 transition-colors relative"
-      style={{ borderRight: '1px solid hsl(45 10% 20%)' }}
+      className="text-center px-2 py-1.5 text-xs cursor-pointer hover:opacity-70"
+      style={{ color: 'hsl(45 10% 30%)', borderRight: '1px solid hsl(45 10% 20%)' }}
       onClick={() => setEditing(true)}
-      onMouseEnter={() => setTooltip(true)}
-      onMouseLeave={() => setTooltip(false)}
     >
-      <span style={{ color: 'hsl(45 10% 35%)' }}>—</span>
-      {tooltip && (
-        <div
-          className="absolute z-50 left-1/2 -translate-x-1/2 bottom-full mb-1 text-[10px] rounded px-2 py-1 whitespace-nowrap"
-          style={{
-            background: '#1a1a18',
-            border: '1px solid hsl(45 10% 28%)',
-            color: 'var(--text-muted)',
-            boxShadow: '0 4px 12px rgba(0,0,0,0.4)',
-          }}
-        >
-          Click to enter · Source: {row.data_source}
-        </div>
-      )}
+      —
     </td>
   )
 }
 
-
-// Format scorecard values based on measurable type
 function formatScorecardValue(value: string | null | undefined, measurable: string, isGoal?: boolean): string {
   if (!value || value === '—') return '—'
   const num = parseFloat(value)
