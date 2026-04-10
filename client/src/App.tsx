@@ -10,6 +10,7 @@ import LoginPage from "@/pages/login";
 import PulsePage from "@/pages/pulse";
 import RocksPage from "@/pages/rocks";
 import IssuesPage from "@/pages/issues";
+import PipelinePage from "@/pages/pipeline";
 import MoneyPage from "@/pages/money";
 import AgentsPage from "@/pages/agents";
 import IntelPage from "@/pages/intel";
@@ -39,6 +40,7 @@ function AuthGate() {
         <Route path="/" component={PulsePage} />
         <Route path="/rocks" component={RocksPage} />
         <Route path="/issues" component={IssuesPage} />
+        <Route path="/pipeline" component={PipelinePage} />
         <Route path="/money" component={MoneyPage} />
         <Route path="/agents" component={AgentsPage} />
         <Route path="/intel" component={IntelPage} />

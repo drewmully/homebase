@@ -2,7 +2,7 @@ import { Link, useLocation } from 'wouter'
 import { useAuth } from '@/lib/auth'
 import { useState } from 'react'
 import {
-  Activity, Mountain, AlertTriangle, DollarSign,
+  Activity, Mountain, AlertTriangle, TrendingUp, DollarSign,
   Bot, Brain, Compass, LogOut, Menu, X
 } from 'lucide-react'
 
@@ -10,6 +10,7 @@ const NAV_ITEMS = [
   { path: '/', label: 'Pulse', icon: Activity },
   { path: '/rocks', label: 'Rocks', icon: Mountain },
   { path: '/issues', label: 'Issues', icon: AlertTriangle },
+  { path: '/pipeline', label: 'Pipeline', icon: TrendingUp },
   { path: '/money', label: 'Money', icon: DollarSign },
   { path: '/agents', label: 'Agents', icon: Bot },
   { path: '/intel', label: 'Intel', icon: Brain },
