@@ -36,7 +36,7 @@ function StatusBadge({ status, rockId }: { status: string; rockId: string }) {
 
       {open && (
         <>
-          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
+          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} style={{ pointerEvents: 'auto' }} />
           <div
             className="absolute top-full left-0 mt-1 z-50 rounded-lg py-1 min-w-[140px]"
             style={{ background: 'var(--surface-card)', border: '1px solid hsl(45 10% 25%)', boxShadow: '0 8px 24px rgba(0,0,0,0.4)' }}
