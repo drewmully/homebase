@@ -5,7 +5,7 @@ import { useAppKV } from '@/lib/hooks'
 import {
   Activity, Mountain, AlertTriangle, TrendingUp,
   DollarSign, Bot, Brain, Compass, LayoutGrid,
-  FileText, BarChart2, Megaphone, Clock
+  FileText, BarChart2, Megaphone, Clock, Users
 } from 'lucide-react'
 
 // ─────────────────────────────────────────────
@@ -19,6 +19,7 @@ function useAppStats() {
   const [agentsCount, setAgentsCount] = useState<number | null>(null)
   const [intelCount, setIntelCount] = useState<number | null>(null)
   const [architectCount, setArchitectCount] = useState<number | null>(null)
+  const [activeSubCount, setActiveSubCount] = useState<number | null>(null)
 
   useEffect(() => {
     supabase.from('outings_pipeline').select('id', { count: 'exact', head: true })
@@ -29,6 +30,8 @@ function useAppStats() {
       .then(({ count }) => setIntelCount(count))
     supabase.from('architect_tasks').select('id', { count: 'exact', head: true })
       .then(({ count }) => setArchitectCount(count ?? null))
+    supabase.from('subscribers').select('id', { count: 'exact', head: true }).eq('status', 'active')
+      .then(({ count }) => setActiveSubCount(count ?? null))
   }, [])
 
   // Health score
@@ -82,6 +85,7 @@ function useAppStats() {
     intelCount,
     architectCount,
     cashBal,
+    activeSubCount,
   }
 }
 
@@ -178,6 +182,13 @@ export default function AppsPage() {
       stat: `Health: ${stats.healthTotal}`,
       path: '/',
       primary: true,
+    },
+    {
+      id: 'subscribers',
+      icon: Users,
+      name: 'Subscribers',
+      stat: stats.activeSubCount !== null ? `${stats.activeSubCount.toLocaleString()} active` : '...',
+      path: '/subscribers',
     },
     {
       id: 'rocks',

@@ -16,6 +16,7 @@ import AgentsPage from "@/pages/agents";
 import IntelPage from "@/pages/intel";
 import ArchitectPage from "@/pages/architect";
 import AppsPage from "@/pages/apps";
+import SubscribersPage from "@/pages/subscribers";
 import NotFound from "@/pages/not-found";
 
 function LoadingScreen() {
@@ -47,6 +48,7 @@ function AuthGate() {
         <Route path="/intel" component={IntelPage} />
         <Route path="/architect" component={ArchitectPage} />
         <Route path="/apps" component={AppsPage} />
+        <Route path="/subscribers" component={SubscribersPage} />
         <Route component={NotFound} />
       </Switch>
     </AppLayout>
