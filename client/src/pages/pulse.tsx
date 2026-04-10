@@ -16,17 +16,18 @@ function fmtMoney(v: number) {
   return `$${v.toFixed(0)}`
 }
 
-function getLast4Mondays(): Date[] {
+function getLast4Mondays() {
   const mondays: Date[] = []
   const today = new Date()
-  // Find last Monday
-  const day = today.getDay() // 0=Sun
-  const lastMonday = new Date(today)
-  lastMonday.setDate(today.getDate() - ((day === 0 ? 7 : day) - 1))
-  lastMonday.setHours(0, 0, 0, 0)
+  // Find this week's Monday
+  const dayOfWeek = today.getDay()
+  const thisMonday = new Date(today)
+  thisMonday.setDate(today.getDate() - (dayOfWeek === 0 ? 6 : dayOfWeek - 1))
+  thisMonday.setHours(0, 0, 0, 0)
+  // Show this week + 3 previous weeks
   for (let i = 3; i >= 0; i--) {
-    const d = new Date(lastMonday)
-    d.setDate(lastMonday.getDate() - i * 7)
+    const d = new Date(thisMonday)
+    d.setDate(thisMonday.getDate() - i * 7)
     mondays.push(d)
   }
   return mondays
@@ -402,7 +403,8 @@ function HealthScore() {
 interface ScorecardRow {
   id: string
   entity: string
-  label: string
+  measurable: string
+  label?: string
   goal: string | null
   data_source: string
   auto_fill_query: string | null
@@ -531,6 +533,40 @@ function ScorecardCell({
   )
 }
 
+
+function GoalCell({ row, onGoalSave }: { row: ScorecardRow; onGoalSave: (id: string, goal: string) => void }) {
+  const [editing, setEditing] = useState(false)
+  const [val, setVal] = useState(row.goal || '')
+  const ref = useRef<HTMLInputElement>(null)
+
+  useEffect(() => { if (editing && ref.current) ref.current.focus() }, [editing])
+
+  if (editing) {
+    return (
+      <td className="text-center px-1 py-1" style={{ borderRight: '1px solid hsl(45 10% 20%)' }}>
+        <input
+          ref={ref}
+          value={val}
+          onChange={e => setVal(e.target.value)}
+          onBlur={() => { setEditing(false); if (val.trim()) onGoalSave(row.id, val.trim()) }}
+          onKeyDown={e => { if (e.key === 'Enter') { setEditing(false); if (val.trim()) onGoalSave(row.id, val.trim()) } }}
+          className="w-full text-center text-xs bg-transparent border-b outline-none"
+          style={{ color: '#C9A84C', borderColor: '#C9A84C', maxWidth: 70 }}
+        />
+      </td>
+    )
+  }
+  return (
+    <td
+      className="text-center px-2 py-2 cursor-pointer hover:opacity-80"
+      style={{ color: row.goal ? '#C9A84C' : 'var(--text-muted)', borderRight: '1px solid hsl(45 10% 20%)', fontSize: 12 }}
+      onClick={() => setEditing(true)}
+      title="Click to set goal"
+    >
+      {row.goal || '—'}
+    </td>
+  )
+}
 function EosScorecard({ entity }: { entity: 'mully' | 'mfs' }) {
   const [rows, setRows] = useState<ScorecardRow[]>([])
   const [entries, setEntries] = useState<ScorecardEntry[]>([])
@@ -553,6 +589,11 @@ function EosScorecard({ entity }: { entity: 'mully' | 'mfs' }) {
     }
     load()
   }, [])
+
+  const handleGoalSave = async (scorecardId: string, goal: string) => {
+    setRows(prev => prev.map(r => r.id === scorecardId ? { ...r, goal } : r))
+    await supabase.from('scorecard').update({ goal }).eq('id', scorecardId)
+  }
 
   const handleSave = async (scorecardId: string, weekStart: string, value: string) => {
     // Optimistic update
@@ -654,15 +695,10 @@ function EosScorecard({ entity }: { entity: 'mully' | 'mfs' }) {
                 className="px-3 py-2"
                 style={{ color: 'var(--text-primary)', borderRight: '1px solid hsl(45 10% 20%)' }}
               >
-                {row.label}
+                <span title={`Data source: ${row.data_source || "manual"}`}>{row.measurable || row.label}</span>
               </td>
-              {/* Goal */}
-              <td
-                className="text-center px-2 py-2"
-                style={{ color: 'var(--text-muted)', borderRight: '1px solid hsl(45 10% 20%)' }}
-              >
-                {row.goal || '—'}
-              </td>
+              {/* Goal — click to edit */}
+              <GoalCell row={row} onGoalSave={handleGoalSave} />
               {/* Week cells */}
               {mondays.map(mon => {
                 const ws = toISODate(mon)
