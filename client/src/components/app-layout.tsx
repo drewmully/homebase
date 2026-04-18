@@ -3,7 +3,7 @@ import { useAuth } from '@/lib/auth'
 import { useState } from 'react'
 import {
   Activity, Mountain, AlertTriangle, TrendingUp, DollarSign,
-  LayoutGrid, LogOut, Menu, X
+  LayoutGrid, LogOut, Menu, X, FlaskConical
 } from 'lucide-react'
 
 const NAV_ITEMS = [
@@ -13,6 +13,7 @@ const NAV_ITEMS = [
   { path: '/pipeline', label: 'Pipeline', icon: TrendingUp },
   { path: '/money', label: 'Money', icon: DollarSign },
   { path: '/apps', label: 'Apps', icon: LayoutGrid },
+  { path: '/cro', label: 'CRO', icon: FlaskConical },
 ]
 
 const MOBILE_NAV = NAV_ITEMS.slice(0, 5)
