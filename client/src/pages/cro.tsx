@@ -1,9 +1,10 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
 import {
   FlaskConical, TrendingUp, Target, BarChart3,
   Clock, CheckCircle2, Circle, Eye, UserPlus,
-  ShoppingCart, ArrowRight, Monitor, Zap
+  ShoppingCart, ArrowRight, Monitor, Zap, Trophy,
+  AlertTriangle, Loader2, History, Crown
 } from 'lucide-react'
 import {
   Table, TableHeader, TableBody, TableHead, TableRow, TableCell
@@ -12,9 +13,15 @@ import {
   Tooltip, TooltipContent, TooltipTrigger
 } from '@/components/ui/tooltip'
 import {
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter
+} from '@/components/ui/dialog'
+import {
   AreaChart, Area, XAxis, YAxis, Tooltip as RechartsTooltip,
-  ResponsiveContainer, CartesianGrid, BarChart, Bar, Cell
+  ResponsiveContainer, CartesianGrid, BarChart, Bar, Cell,
+  LineChart, Line, ReferenceLine, Label
 } from 'recharts'
+
+/* ─── Interfaces ─── */
 
 interface Experiment {
   id: string
@@ -58,6 +65,57 @@ interface ResultRow {
   ab_experiments: { name: string } | null
 }
 
+interface ArchiveRow {
+  id: string
+  experiment_id: string
+  experiment_name: string
+  page: string
+  element: string
+  started_at: string
+  ended_at: string
+  duration_days: number
+  winning_variant: string
+  control_visitors: number
+  control_conversions: number
+  control_rate: number
+  winner_visitors: number
+  winner_conversions: number
+  winner_rate: number
+  relative_lift_pct: number
+  absolute_lift_pct: number
+  confidence_score: number
+  decided_by: string
+  hypotheses_tested: string[]
+  created_at: string
+}
+
+/* ─── Stats helpers ─── */
+
+function zTestConfidence(controlVisitors: number, controlConversions: number, variantVisitors: number, variantConversions: number): number {
+  if (controlVisitors < 1 || variantVisitors < 1) return 0
+  const pC = controlConversions / controlVisitors
+  const pV = variantConversions / variantVisitors
+  const pPool = (controlConversions + variantConversions) / (controlVisitors + variantVisitors)
+  if (pPool === 0 || pPool === 1) return 0
+  const se = Math.sqrt(pPool * (1 - pPool) * (1 / controlVisitors + 1 / variantVisitors))
+  if (se === 0) return 0
+  const z = Math.abs(pV - pC) / se
+  // Approximate two-tailed p-value from z-score using error function approximation
+  const p = 2 * (1 - normalCDF(z))
+  return Math.max(0, Math.min(100, (1 - p) * 100))
+}
+
+function normalCDF(x: number): number {
+  const a1 = 0.254829592, a2 = -0.284496736, a3 = 1.421413741, a4 = -1.453152027, a5 = 1.061405429, p = 0.3275911
+  const sign = x < 0 ? -1 : 1
+  x = Math.abs(x) / Math.sqrt(2)
+  const t = 1.0 / (1.0 + p * x)
+  const y = 1.0 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * Math.exp(-x * x)
+  return 0.5 * (1.0 + sign * y)
+}
+
+/* ─── Format helpers ─── */
+
 function daysSince(dateStr: string): number {
   const start = new Date(dateStr)
   const now = new Date()
@@ -65,12 +123,12 @@ function daysSince(dateStr: string): number {
 }
 
 function formatPct(val: number | null | undefined): string {
-  if (val == null) return '—'
+  if (val == null) return '\u2014'
   return `${(Number(val) * 100).toFixed(2)}%`
 }
 
 function formatNum(val: number | null | undefined): string {
-  if (val == null) return '—'
+  if (val == null) return '\u2014'
   return Number(val).toLocaleString()
 }
 
@@ -113,6 +171,18 @@ function funnelStageStyle(stage: string): { bg: string; color: string; border: s
   }
 }
 
+function liftColor(lift: number): string {
+  if (lift > 0) return '#4ade80'
+  if (lift < 0) return '#ef4444'
+  return '#8a8778'
+}
+
+function confidenceBadge(conf: number): { label: string; color: string; bg: string; border: string } {
+  if (conf >= 95) return { label: `${conf.toFixed(1)}%`, color: '#4ade80', bg: 'rgba(74,222,128,0.1)', border: 'rgba(74,222,128,0.3)' }
+  if (conf >= 80) return { label: `${conf.toFixed(1)}%`, color: '#f59e0b', bg: 'rgba(245,158,11,0.1)', border: 'rgba(245,158,11,0.3)' }
+  return { label: conf > 0 ? `${conf.toFixed(1)}%` : 'N/A', color: '#8a8778', bg: 'rgba(138,135,120,0.1)', border: 'rgba(138,135,120,0.3)' }
+}
+
 /* ─── Funnel step component ─── */
 function FunnelStep({ label, value, pct, color, isLast }: {
   label: string; value: string; pct?: string; color: string; isLast?: boolean
@@ -131,6 +201,471 @@ function FunnelStep({ label, value, pct, color, isLast }: {
   )
 }
 
+/* ─── Variant Performance Card ─── */
+interface VariantPerf {
+  variant: string
+  visitors: number
+  conversions: number
+  rate: number
+  confidence: number
+  liftVsControl: number
+}
+
+function VariantPerformanceCard({ experiment, variantResults, onDeclareWinner }: {
+  experiment: Experiment
+  variantResults: ResultRow[]
+  onDeclareWinner: (experiment: Experiment, variant: string, perf: VariantPerf) => void
+}) {
+  // Aggregate per-variant data from result rows
+  const latestByVariant = new Map<string, ResultRow>()
+  for (const r of variantResults) {
+    if (r.experiment_id === experiment.id) {
+      const existing = latestByVariant.get(r.variant)
+      if (!existing || r.snapshot_date > existing.snapshot_date) {
+        latestByVariant.set(r.variant, r)
+      }
+    }
+  }
+
+  if (latestByVariant.size === 0) {
+    return (
+      <div className="rounded-lg p-3 mt-3" style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid hsl(45 10% 16%)' }}>
+        <div className="text-[10px] font-semibold mb-2 uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>
+          Variant Performance
+        </div>
+        <div className="text-xs" style={{ color: 'var(--text-muted)' }}>
+          Waiting for variant data. The CRO cron will populate per-variant results on its next run.
+        </div>
+      </div>
+    )
+  }
+
+  // Build perf array
+  const controlRow = latestByVariant.get('control')
+  const controlRate = controlRow && controlRow.page_views > 0
+    ? controlRow.purchases / controlRow.page_views
+    : 0
+
+  const perfs: VariantPerf[] = []
+  latestByVariant.forEach((row, variant) => {
+    const visitors = row.page_views || 0
+    const conversions = row.purchases || 0
+    const rate = visitors > 0 ? conversions / visitors : 0
+    const liftVsControl = controlRate > 0 && variant !== 'control'
+      ? ((rate - controlRate) / controlRate) * 100
+      : 0
+
+    let confidence = 0
+    if (variant !== 'control' && controlRow) {
+      confidence = zTestConfidence(
+        controlRow.page_views || 0, controlRow.purchases || 0,
+        visitors, conversions
+      )
+    }
+
+    perfs.push({ variant, visitors, conversions, rate, confidence, liftVsControl })
+  })
+
+  // Sort: control first, then by rate descending
+  perfs.sort((a, b) => {
+    if (a.variant === 'control') return -1
+    if (b.variant === 'control') return 1
+    return b.rate - a.rate
+  })
+
+  const totalVisitors = perfs.reduce((s, p) => s + p.visitors, 0)
+
+  return (
+    <div className="rounded-lg p-3 mt-3" style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid hsl(45 10% 16%)' }}>
+      <div className="flex items-center justify-between mb-2">
+        <div className="text-[10px] font-semibold uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>
+          Variant Performance
+        </div>
+        <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+          {formatNum(totalVisitors)} total visitors
+        </div>
+      </div>
+
+      <div className="space-y-1.5">
+        {perfs.map(p => {
+          const cb = confidenceBadge(p.confidence)
+          const isControl = p.variant === 'control'
+          const hasEnoughData = p.visitors >= 100
+          const isSignificant = p.confidence >= 95
+          const canDeclare = hasEnoughData && !isControl
+
+          return (
+            <div key={p.variant} className="rounded-lg px-3 py-2.5" style={{ background: 'var(--surface-card)', border: '1px solid hsl(45 10% 18%)' }}>
+              <div className="flex items-center gap-3">
+                {/* Variant badge */}
+                <span
+                  className="rounded-full px-2 py-0.5 text-[10px] font-semibold shrink-0 min-w-[70px] text-center"
+                  style={{
+                    background: isControl ? 'rgba(138,135,120,0.15)' : 'rgba(201,168,76,0.1)',
+                    color: isControl ? '#8a8778' : '#C9A84C',
+                    border: isControl ? '1px solid rgba(138,135,120,0.3)' : '1px solid rgba(201,168,76,0.3)',
+                  }}
+                >
+                  {p.variant}
+                </span>
+
+                {/* Stats row */}
+                <div className="flex items-center gap-4 flex-1 min-w-0">
+                  <div className="text-center">
+                    <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Visitors</div>
+                    <div className="text-xs font-semibold" style={{ color: 'var(--text-primary)' }}>{formatNum(p.visitors)}</div>
+                  </div>
+                  <div className="text-center">
+                    <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Purchases</div>
+                    <div className="text-xs font-semibold" style={{ color: 'var(--text-primary)' }}>{formatNum(p.conversions)}</div>
+                  </div>
+                  <div className="text-center">
+                    <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Conv. Rate</div>
+                    <div className="text-xs font-bold" style={{ color: 'var(--gold)' }}>{(p.rate * 100).toFixed(2)}%</div>
+                  </div>
+                  {!isControl && (
+                    <>
+                      <div className="text-center">
+                        <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Lift</div>
+                        <div className="text-xs font-bold" style={{ color: liftColor(p.liftVsControl) }}>
+                          {p.liftVsControl > 0 ? '+' : ''}{p.liftVsControl.toFixed(1)}%
+                        </div>
+                      </div>
+                      <div className="text-center">
+                        <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Confidence</div>
+                        <span
+                          className="inline-block rounded-full px-1.5 py-0.5 text-[10px] font-semibold"
+                          style={{ background: cb.bg, color: cb.color, border: `1px solid ${cb.border}` }}
+                        >
+                          {cb.label}
+                        </span>
+                      </div>
+                    </>
+                  )}
+                </div>
+
+                {/* Declare Winner button */}
+                {canDeclare && (
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <button
+                        onClick={() => onDeclareWinner(experiment, p.variant, p)}
+                        className="shrink-0 rounded-lg px-2.5 py-1.5 text-[10px] font-semibold transition-all"
+                        style={{
+                          background: isSignificant ? 'rgba(201,168,76,0.15)' : 'rgba(138,135,120,0.1)',
+                          color: isSignificant ? '#C9A84C' : '#8a8778',
+                          border: `1px solid ${isSignificant ? 'rgba(201,168,76,0.4)' : 'rgba(138,135,120,0.3)'}`,
+                          cursor: 'pointer',
+                        }}
+                      >
+                        <div className="flex items-center gap-1">
+                          <Crown size={10} />
+                          Declare Winner
+                        </div>
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent
+                      side="top"
+                      className="max-w-xs text-xs"
+                      style={{ background: 'var(--surface-card)', color: 'var(--text-primary)', border: '1px solid hsl(45 10% 28%)' }}
+                    >
+                      {!hasEnoughData
+                        ? 'Need at least 100 visitors per variant'
+                        : isSignificant
+                          ? 'Statistically significant result. Ready to push live.'
+                          : `Confidence is ${p.confidence.toFixed(1)}%. Consider waiting for 95%+ significance.`
+                      }
+                    </TooltipContent>
+                  </Tooltip>
+                )}
+
+                {isSignificant && !isControl && (
+                  <span
+                    className="rounded-full px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider shrink-0"
+                    style={{ background: 'rgba(74,222,128,0.1)', color: '#4ade80', border: '1px solid rgba(74,222,128,0.3)' }}
+                  >
+                    Significant
+                  </span>
+                )}
+              </div>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+/* ─── Declare Winner Modal ─── */
+function DeclareWinnerModal({ open, onOpenChange, experiment, variant, perf, onConfirm, confirming }: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  experiment: Experiment | null
+  variant: string
+  perf: VariantPerf | null
+  onConfirm: () => void
+  confirming: boolean
+}) {
+  if (!experiment || !perf) return null
+  const lowConfidence = perf.confidence < 95
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent
+        className="sm:max-w-md"
+        style={{ background: 'var(--surface-card)', border: '1px solid hsl(45 10% 25%)', color: 'var(--text-primary)' }}
+      >
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2 text-base" style={{ color: 'var(--text-primary)' }}>
+            <Crown size={16} style={{ color: 'var(--gold)' }} />
+            Declare Winner
+          </DialogTitle>
+          <DialogDescription style={{ color: 'var(--text-muted)' }}>
+            Push this variant to 100% of traffic
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-3 py-2">
+          {/* Experiment name */}
+          <div className="text-xs" style={{ color: 'var(--text-muted)' }}>
+            Experiment: <span className="font-semibold" style={{ color: 'var(--text-primary)' }}>{experiment.name}</span>
+          </div>
+
+          {/* Winner info */}
+          <div className="rounded-lg p-3" style={{ background: 'rgba(201,168,76,0.06)', border: '1px solid rgba(201,168,76,0.2)' }}>
+            <div className="flex items-center gap-3">
+              <span
+                className="rounded-full px-2 py-0.5 text-[10px] font-semibold"
+                style={{ background: 'rgba(201,168,76,0.1)', color: '#C9A84C', border: '1px solid rgba(201,168,76,0.3)' }}
+              >
+                {variant}
+              </span>
+              <div className="text-xs" style={{ color: 'var(--text-primary)' }}>
+                <span className="font-bold" style={{ color: 'var(--gold)' }}>{(perf.rate * 100).toFixed(2)}%</span> conv. rate
+              </div>
+              <div className="text-xs" style={{ color: liftColor(perf.liftVsControl) }}>
+                {perf.liftVsControl > 0 ? '+' : ''}{perf.liftVsControl.toFixed(1)}% vs control
+              </div>
+            </div>
+            <div className="flex items-center gap-4 mt-2 text-[10px]" style={{ color: 'var(--text-muted)' }}>
+              <span>{formatNum(perf.visitors)} visitors</span>
+              <span>{formatNum(perf.conversions)} purchases</span>
+              <span>Confidence: {perf.confidence.toFixed(1)}%</span>
+            </div>
+          </div>
+
+          {/* Low confidence warning */}
+          {lowConfidence && (
+            <div className="rounded-lg p-3 flex items-start gap-2" style={{ background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.25)' }}>
+              <AlertTriangle size={14} className="shrink-0 mt-0.5" style={{ color: '#f59e0b' }} />
+              <div className="text-xs" style={{ color: '#f59e0b' }}>
+                This variant has not reached statistical significance ({perf.confidence.toFixed(1)}% confidence, need 95%+). The result may be due to random chance. Are you sure?
+              </div>
+            </div>
+          )}
+
+          {/* What happens */}
+          <div className="text-[10px] space-y-1" style={{ color: 'var(--text-muted)' }}>
+            <div className="font-semibold uppercase tracking-wider mb-1">On confirmation:</div>
+            <div>1. Experiment marked as completed with this winner</div>
+            <div>2. Flag overrides set so all users see this variant</div>
+            <div>3. Result archived with lift metrics</div>
+            <div>4. CRO cron will wire up the next queued test</div>
+          </div>
+        </div>
+
+        <DialogFooter className="flex gap-2 sm:gap-2">
+          <button
+            onClick={() => onOpenChange(false)}
+            className="rounded-lg px-4 py-2 text-xs font-medium transition-all"
+            style={{ background: 'rgba(138,135,120,0.1)', color: '#8a8778', border: '1px solid rgba(138,135,120,0.3)', cursor: 'pointer' }}
+            disabled={confirming}
+          >
+            Cancel
+          </button>
+          <button
+            onClick={onConfirm}
+            disabled={confirming}
+            className="rounded-lg px-4 py-2 text-xs font-semibold transition-all flex items-center gap-1.5"
+            style={{
+              background: 'rgba(201,168,76,0.15)',
+              color: '#C9A84C',
+              border: '1px solid rgba(201,168,76,0.4)',
+              cursor: confirming ? 'not-allowed' : 'pointer',
+              opacity: confirming ? 0.6 : 1,
+            }}
+          >
+            {confirming ? <Loader2 size={12} className="animate-spin" /> : <Trophy size={12} />}
+            {confirming ? 'Pushing...' : 'Push to Live'}
+          </button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+/* ─── Test Archive Section ─── */
+function TestArchiveSection({ archive, conversionHistory }: { archive: ArchiveRow[]; conversionHistory: { date: string; rate: number }[] }) {
+  if (archive.length === 0) return null
+
+  // Summary stats
+  const totalTests = archive.length
+  const winners = archive.filter(a => a.relative_lift_pct > 0)
+  const avgLift = winners.length > 0
+    ? winners.reduce((s, a) => s + Number(a.relative_lift_pct), 0) / winners.length
+    : 0
+  const bestTest = archive.reduce((best, a) => Number(a.relative_lift_pct) > Number(best.relative_lift_pct) ? a : best, archive[0])
+
+  // Cumulative lift chart data: build from archive sorted by ended_at
+  const sorted = [...archive].sort((a, b) => new Date(a.ended_at).getTime() - new Date(b.ended_at).getTime())
+  const cumulativeData = sorted.map((a, i) => ({
+    label: a.experiment_name.length > 20 ? a.experiment_name.slice(0, 20) + '...' : a.experiment_name,
+    lift: Number(a.relative_lift_pct),
+    cumulativeLift: sorted.slice(0, i + 1).reduce((s, x) => s + Number(x.relative_lift_pct), 0) / (i + 1),
+    date: new Date(a.ended_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+    decidedBy: a.decided_by,
+  }))
+
+  return (
+    <section>
+      <h2 className="text-sm font-semibold mb-3 flex items-center gap-2" style={{ color: 'var(--text-primary)' }}>
+        <span style={{ color: 'var(--gold)' }}>&#9670;</span>
+        <History size={14} style={{ color: 'var(--gold)' }} />
+        Test Archive
+        <span className="text-xs font-normal" style={{ color: 'var(--text-muted)' }}>
+          ({totalTests} completed)
+        </span>
+      </h2>
+
+      {/* Summary Bar */}
+      <div
+        className="rounded-xl p-4 mb-3 flex flex-wrap gap-6"
+        style={{ background: 'var(--surface-card)', border: '1px solid hsl(45 10% 20%)' }}
+      >
+        <div>
+          <div className="text-[10px] uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>Tests Completed</div>
+          <div className="text-lg font-bold" style={{ color: 'var(--text-primary)' }}>{totalTests}</div>
+        </div>
+        <div>
+          <div className="text-[10px] uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>Winners</div>
+          <div className="text-lg font-bold" style={{ color: '#4ade80' }}>{winners.length}</div>
+        </div>
+        <div>
+          <div className="text-[10px] uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>Avg Winner Lift</div>
+          <div className="text-lg font-bold" style={{ color: avgLift > 0 ? '#4ade80' : '#8a8778' }}>
+            {avgLift > 0 ? '+' : ''}{avgLift.toFixed(1)}%
+          </div>
+        </div>
+        {bestTest && Number(bestTest.relative_lift_pct) > 0 && (
+          <div>
+            <div className="text-[10px] uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>Best Test</div>
+            <div className="text-xs font-semibold" style={{ color: 'var(--gold)' }}>
+              {bestTest.experiment_name}: +{Number(bestTest.relative_lift_pct).toFixed(1)}%
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Cumulative Lift Chart */}
+      {cumulativeData.length > 1 && (
+        <div className="rounded-xl p-4 mb-3" style={{ background: 'var(--surface-card)', border: '1px solid hsl(45 10% 20%)' }}>
+          <div className="text-[10px] font-semibold uppercase tracking-wider mb-2" style={{ color: 'var(--text-muted)' }}>
+            Lift per Test
+          </div>
+          <ResponsiveContainer width="100%" height={180}>
+            <BarChart data={cumulativeData} margin={{ top: 5, right: 5, bottom: 5, left: 5 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="hsl(45 10% 16%)" vertical={false} />
+              <XAxis dataKey="date" tick={{ fill: '#8a8778', fontSize: 10 }} />
+              <YAxis tick={{ fill: '#8a8778', fontSize: 10 }} tickFormatter={(v: number) => `${v > 0 ? '+' : ''}${v.toFixed(0)}%`} />
+              <RechartsTooltip
+                contentStyle={{ background: '#232320', border: '1px solid hsl(45 10% 25%)', borderRadius: 8, fontSize: 12 }}
+                labelStyle={{ color: '#8a8778' }}
+                formatter={(value: number, name: string) => [
+                  `${value > 0 ? '+' : ''}${value.toFixed(1)}%`,
+                  name === 'lift' ? 'Lift' : 'Avg Lift'
+                ]}
+              />
+              <ReferenceLine y={0} stroke="hsl(45 10% 25%)" />
+              <Bar dataKey="lift" radius={[4, 4, 0, 0]}>
+                {cumulativeData.map((entry, idx) => (
+                  <Cell key={idx} fill={entry.lift > 0 ? '#4ade80' : entry.lift < 0 ? '#ef4444' : '#8a8778'} fillOpacity={0.7} />
+                ))}
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+
+      {/* Archive Table */}
+      <div className="rounded-xl overflow-hidden" style={{ background: 'var(--surface-card)', border: '1px solid hsl(45 10% 20%)' }}>
+        <Table>
+          <TableHeader>
+            <TableRow style={{ borderColor: 'hsl(45 10% 20%)' }}>
+              <TableHead className="text-xs" style={{ color: 'var(--text-muted)' }}>Test</TableHead>
+              <TableHead className="text-xs hidden md:table-cell" style={{ color: 'var(--text-muted)' }}>Element</TableHead>
+              <TableHead className="text-xs hidden md:table-cell" style={{ color: 'var(--text-muted)' }}>Duration</TableHead>
+              <TableHead className="text-xs" style={{ color: 'var(--text-muted)' }}>Winner</TableHead>
+              <TableHead className="text-xs" style={{ color: 'var(--text-muted)' }}>Lift</TableHead>
+              <TableHead className="text-xs hidden md:table-cell" style={{ color: 'var(--text-muted)' }}>Confidence</TableHead>
+              <TableHead className="text-xs hidden md:table-cell" style={{ color: 'var(--text-muted)' }}>By</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {archive.map(a => {
+              const lift = Number(a.relative_lift_pct)
+              const conf = Number(a.confidence_score)
+              const cb = confidenceBadge(conf)
+              return (
+                <TableRow key={a.id} style={{ borderColor: 'hsl(45 10% 18%)' }}>
+                  <TableCell className="py-2.5 text-xs font-medium" style={{ color: 'var(--text-primary)' }}>
+                    {a.experiment_name}
+                  </TableCell>
+                  <TableCell className="py-2.5 text-xs hidden md:table-cell" style={{ color: 'var(--text-muted)' }}>
+                    {a.element}
+                  </TableCell>
+                  <TableCell className="py-2.5 text-xs hidden md:table-cell" style={{ color: 'var(--text-muted)' }}>
+                    {a.duration_days}d
+                  </TableCell>
+                  <TableCell className="py-2.5">
+                    <span
+                      className="rounded-full px-2 py-0.5 text-[10px] font-semibold"
+                      style={{
+                        background: a.winning_variant === 'control' ? 'rgba(138,135,120,0.1)' : 'rgba(201,168,76,0.1)',
+                        color: a.winning_variant === 'control' ? '#8a8778' : '#C9A84C',
+                        border: a.winning_variant === 'control' ? '1px solid rgba(138,135,120,0.3)' : '1px solid rgba(201,168,76,0.3)',
+                      }}
+                    >
+                      {a.winning_variant}
+                    </span>
+                  </TableCell>
+                  <TableCell className="py-2.5 text-xs font-bold" style={{ color: liftColor(lift) }}>
+                    {lift > 0 ? '+' : ''}{lift.toFixed(1)}%
+                  </TableCell>
+                  <TableCell className="py-2.5 hidden md:table-cell">
+                    <span
+                      className="inline-block rounded-full px-1.5 py-0.5 text-[10px] font-semibold"
+                      style={{ background: cb.bg, color: cb.color, border: `1px solid ${cb.border}` }}
+                    >
+                      {cb.label}
+                    </span>
+                  </TableCell>
+                  <TableCell className="py-2.5 text-xs capitalize hidden md:table-cell" style={{ color: 'var(--text-muted)' }}>
+                    {a.decided_by}
+                  </TableCell>
+                </TableRow>
+              )
+            })}
+          </TableBody>
+        </Table>
+      </div>
+    </section>
+  )
+}
+
+/* ═══════════════════════════════════════════
+   ═══ MAIN CRO PAGE ═══════════════════════
+   ═══════════════════════════════════════════ */
+
 export default function CroPage() {
   const [loading, setLoading] = useState(true)
   const [funnelBaseline, setFunnelBaseline] = useState<ResultRow | null>(null)
@@ -139,67 +674,179 @@ export default function CroPage() {
   const [hypotheses, setHypotheses] = useState<Hypothesis[]>([])
   const [results, setResults] = useState<ResultRow[]>([])
   const [conversionHistory, setConversionHistory] = useState<any[]>([])
+  const [archive, setArchive] = useState<ArchiveRow[]>([])
 
-  useEffect(() => {
-    async function load() {
-      setLoading(true)
-      const [
-        { data: baselineData },
-        { data: activeData },
-        { data: completedData },
-        { data: hypothesesData },
-        { data: resultsData },
-        { data: conversionData },
-      ] = await Promise.all([
-        supabase
-          .from('ab_results')
-          .select('*')
-          .eq('variant', 'baseline-all')
-          .order('snapshot_date', { ascending: false })
-          .limit(1),
-        supabase
-          .from('ab_experiments')
-          .select('*')
-          .eq('status', 'active')
-          .order('started_at', { ascending: true }),
-        supabase
-          .from('ab_experiments')
-          .select('*')
-          .eq('status', 'completed')
-          .order('ended_at', { ascending: false }),
-        supabase
-          .from('ab_hypotheses')
-          .select('*')
-          .order('priority_score', { ascending: false }),
-        supabase
-          .from('ab_results')
-          .select('*, ab_experiments(name)')
-          .neq('variant', 'baseline-all')
-          .order('snapshot_date', { ascending: false })
-          .limit(30),
-        supabase
-          .from('ab_results')
-          .select('snapshot_date, conversion_rate_purchase, variant')
-          .eq('variant', 'baseline-all')
-          .order('snapshot_date', { ascending: true })
-          .limit(30),
-      ])
+  // Declare Winner modal state
+  const [declareOpen, setDeclareOpen] = useState(false)
+  const [declareExperiment, setDeclareExperiment] = useState<Experiment | null>(null)
+  const [declareVariant, setDeclareVariant] = useState('')
+  const [declarePerf, setDeclarePerf] = useState<VariantPerf | null>(null)
+  const [confirming, setConfirming] = useState(false)
 
-      setFunnelBaseline((baselineData?.[0] as ResultRow) || null)
-      setActiveExperiments((activeData as Experiment[]) || [])
-      setCompletedExperiments((completedData as Experiment[]) || [])
-      setHypotheses((hypothesesData as Hypothesis[]) || [])
-      setResults((resultsData as ResultRow[]) || [])
-      setConversionHistory(
-        (conversionData || []).map((r: any) => ({
-          date: r.snapshot_date,
-          rate: r.conversion_rate_purchase ? Number(r.conversion_rate_purchase) * 100 : 0,
-        }))
-      )
-      setLoading(false)
-    }
-    load()
+  const loadData = useCallback(async () => {
+    setLoading(true)
+    const [
+      { data: baselineData },
+      { data: activeData },
+      { data: completedData },
+      { data: hypothesesData },
+      { data: resultsData },
+      { data: conversionData },
+      { data: archiveData },
+    ] = await Promise.all([
+      supabase
+        .from('ab_results')
+        .select('*')
+        .eq('variant', 'baseline-all')
+        .order('snapshot_date', { ascending: false })
+        .limit(1),
+      supabase
+        .from('ab_experiments')
+        .select('*')
+        .eq('status', 'active')
+        .order('started_at', { ascending: true }),
+      supabase
+        .from('ab_experiments')
+        .select('*')
+        .eq('status', 'completed')
+        .order('ended_at', { ascending: false }),
+      supabase
+        .from('ab_hypotheses')
+        .select('*')
+        .order('priority_score', { ascending: false }),
+      supabase
+        .from('ab_results')
+        .select('*, ab_experiments(name)')
+        .neq('variant', 'baseline-all')
+        .order('snapshot_date', { ascending: false })
+        .limit(30),
+      supabase
+        .from('ab_results')
+        .select('snapshot_date, conversion_rate_purchase, variant')
+        .eq('variant', 'baseline-all')
+        .order('snapshot_date', { ascending: true })
+        .limit(30),
+      supabase
+        .from('ab_experiment_archive')
+        .select('*')
+        .order('ended_at', { ascending: false }),
+    ])
+
+    setFunnelBaseline((baselineData?.[0] as ResultRow) || null)
+    setActiveExperiments((activeData as Experiment[]) || [])
+    setCompletedExperiments((completedData as Experiment[]) || [])
+    setHypotheses((hypothesesData as Hypothesis[]) || [])
+    setResults((resultsData as ResultRow[]) || [])
+    setConversionHistory(
+      (conversionData || []).map((r: any) => ({
+        date: r.snapshot_date,
+        rate: r.conversion_rate_purchase ? Number(r.conversion_rate_purchase) * 100 : 0,
+      }))
+    )
+    setArchive((archiveData as ArchiveRow[]) || [])
+    setLoading(false)
   }, [])
+
+  useEffect(() => { loadData() }, [loadData])
+
+  // Auto-refresh every 5 minutes
+  useEffect(() => {
+    const interval = setInterval(loadData, 5 * 60 * 1000)
+    return () => clearInterval(interval)
+  }, [loadData])
+
+  // Declare winner handler
+  const handleDeclareWinner = (experiment: Experiment, variant: string, perf: VariantPerf) => {
+    setDeclareExperiment(experiment)
+    setDeclareVariant(variant)
+    setDeclarePerf(perf)
+    setDeclareOpen(true)
+  }
+
+  const handleConfirmWinner = async () => {
+    if (!declareExperiment || !declarePerf) return
+    setConfirming(true)
+
+    try {
+      const exp = declareExperiment
+      const now = new Date().toISOString()
+      const durationDays = daysSince(exp.started_at)
+
+      // Get control perf for archive
+      const controlResults = results.filter(r => r.experiment_id === exp.id && r.variant === 'control')
+      const controlRow = controlResults.length > 0
+        ? controlResults.reduce((latest, r) => r.snapshot_date > latest.snapshot_date ? r : latest, controlResults[0])
+        : null
+
+      // 1. Update experiment to completed
+      await supabase
+        .from('ab_experiments')
+        .update({
+          status: 'completed',
+          winning_variant: declareVariant,
+          ended_at: now,
+        })
+        .eq('id', exp.id)
+
+      // 2. Update hypotheses
+      const linkedHypotheses = hypotheses.filter(h => h.experiment_id === exp.id)
+      for (const h of linkedHypotheses) {
+        await supabase
+          .from('ab_hypotheses')
+          .update({ status: h.status === 'testing' ? 'validated' : h.status })
+          .eq('id', h.id)
+      }
+
+      // 3. Insert flag overrides
+      if (exp.variants) {
+        for (const [flagKey, variants] of Object.entries(exp.variants)) {
+          if (typeof variants === 'object' && variants !== null && declareVariant in variants) {
+            await supabase
+              .from('flag_overrides')
+              .upsert({
+                flag_key: flagKey,
+                forced_variant: declareVariant,
+                forced_at: now,
+                forced_by: 'drew',
+              }, { onConflict: 'flag_key' })
+          }
+        }
+      }
+
+      // 4. Insert archive row
+      await supabase
+        .from('ab_experiment_archive')
+        .insert({
+          experiment_id: exp.id,
+          experiment_name: exp.name,
+          page: exp.page,
+          element: exp.element,
+          started_at: exp.started_at,
+          ended_at: now,
+          duration_days: durationDays,
+          winning_variant: declareVariant,
+          control_visitors: controlRow?.page_views || 0,
+          control_conversions: controlRow?.purchases || 0,
+          control_rate: controlRow && controlRow.page_views > 0 ? controlRow.purchases / controlRow.page_views : 0,
+          winner_visitors: declarePerf.visitors,
+          winner_conversions: declarePerf.conversions,
+          winner_rate: declarePerf.rate,
+          relative_lift_pct: declarePerf.liftVsControl,
+          absolute_lift_pct: declarePerf.rate - (controlRow && controlRow.page_views > 0 ? controlRow.purchases / controlRow.page_views : 0),
+          confidence_score: declarePerf.confidence,
+          decided_by: 'drew',
+          hypotheses_tested: linkedHypotheses.map(h => h.hypothesis),
+        })
+
+      // Close modal and reload
+      setDeclareOpen(false)
+      setConfirming(false)
+      await loadData()
+    } catch (err) {
+      console.error('Failed to declare winner:', err)
+      setConfirming(false)
+    }
+  }
 
   if (loading) {
     return (
@@ -256,6 +903,17 @@ export default function CroPage() {
 
   return (
     <div className="max-w-6xl mx-auto px-4 md:px-8 py-6 space-y-6">
+      {/* Declare Winner Modal */}
+      <DeclareWinnerModal
+        open={declareOpen}
+        onOpenChange={setDeclareOpen}
+        experiment={declareExperiment}
+        variant={declareVariant}
+        perf={declarePerf}
+        onConfirm={handleConfirmWinner}
+        confirming={confirming}
+      />
+
       {/* Header */}
       <div className="flex items-start justify-between">
         <div>
@@ -264,7 +922,7 @@ export default function CroPage() {
             CRO Lab
           </h1>
           <p className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>
-            Automated A/B testing &mdash; analyzing every 3 days
+            Automated A/B testing, analyzing every 3 days
           </p>
         </div>
         <div
@@ -278,10 +936,10 @@ export default function CroPage() {
       {/* ─── CONVERSION FUNNEL ─── */}
       <section>
         <h2 className="text-sm font-semibold mb-3 flex items-center gap-2" style={{ color: 'var(--text-primary)' }}>
-          <span style={{ color: 'var(--gold)' }}>◆</span> Conversion Funnel
+          <span style={{ color: 'var(--gold)' }}>&#9670;</span> Conversion Funnel
           {funnelBaseline?.snapshot_date && (
             <span className="text-xs font-normal" style={{ color: 'var(--text-muted)' }}>
-              — 7-day snapshot ({funnelBaseline.snapshot_date})
+              {'\u2014'} 7-day snapshot ({funnelBaseline.snapshot_date})
             </span>
           )}
         </h2>
@@ -336,7 +994,7 @@ export default function CroPage() {
       {/* ─── LIVE EXPERIMENTS ─── */}
       <section>
         <h2 className="text-sm font-semibold mb-3 flex items-center gap-2" style={{ color: 'var(--text-primary)' }}>
-          <span style={{ color: 'var(--gold)' }}>◆</span> Live Experiments
+          <span style={{ color: 'var(--gold)' }}>&#9670;</span> Live Experiments
           <span className="text-xs font-normal" style={{ color: 'var(--text-muted)' }}>({activeExperiments.length} running)</span>
         </h2>
         {activeExperiments.length === 0 ? (
@@ -344,7 +1002,7 @@ export default function CroPage() {
             className="rounded-xl p-6 text-center text-sm"
             style={{ background: 'var(--surface-card)', border: '1px solid hsl(45 10% 20%)', color: 'var(--text-muted)' }}
           >
-            No active experiments — the cron will deploy the next test automatically
+            No active experiments. The cron will deploy the next test automatically.
           </div>
         ) : (
           <div className="space-y-3">
@@ -415,6 +1073,13 @@ export default function CroPage() {
                   </div>
                 )}
 
+                {/* Variant Performance (NEW) */}
+                <VariantPerformanceCard
+                  experiment={exp}
+                  variantResults={results}
+                  onDeclareWinner={handleDeclareWinner}
+                />
+
                 {/* Testing hypotheses linked to this experiment */}
                 {testingHypotheses.filter(h => h.experiment_id === exp.id).length > 0 && (
                   <div className="mt-3 pt-3" style={{ borderTop: '1px solid hsl(45 10% 16%)' }}>
@@ -423,7 +1088,7 @@ export default function CroPage() {
                     </div>
                     {testingHypotheses.filter(h => h.experiment_id === exp.id).map(h => (
                       <div key={h.id} className="text-xs mb-1" style={{ color: 'var(--text-primary)' }}>
-                        • {h.hypothesis}
+                        &bull; {h.hypothesis}
                       </div>
                     ))}
                   </div>
@@ -438,7 +1103,7 @@ export default function CroPage() {
       {conversionHistory.length > 1 && (
         <section>
           <h2 className="text-sm font-semibold mb-3 flex items-center gap-2" style={{ color: 'var(--text-primary)' }}>
-            <span style={{ color: 'var(--gold)' }}>◆</span> Purchase Rate Trend
+            <span style={{ color: 'var(--gold)' }}>&#9670;</span> Purchase Rate Trend
           </h2>
           <div className="rounded-xl p-4" style={{ background: 'var(--surface-card)', border: '1px solid hsl(45 10% 20%)' }}>
             <ResponsiveContainer width="100%" height={200}>
@@ -474,7 +1139,7 @@ export default function CroPage() {
       {/* ─── HYPOTHESIS BACKLOG ─── */}
       <section>
         <h2 className="text-sm font-semibold mb-3 flex items-center gap-2" style={{ color: 'var(--text-primary)' }}>
-          <span style={{ color: 'var(--gold)' }}>◆</span>
+          <span style={{ color: 'var(--gold)' }}>&#9670;</span>
           <Target size={14} style={{ color: 'var(--gold)' }} />
           Hypothesis Queue
           <span className="text-xs font-normal" style={{ color: 'var(--text-muted)' }}>
@@ -518,7 +1183,7 @@ export default function CroPage() {
                           <TooltipTrigger asChild>
                             <div>
                               <div className="text-xs cursor-help" style={{ color: 'var(--text-primary)' }}>
-                                {idx === 0 && <span className="text-[10px] mr-1.5 font-semibold" style={{ color: 'var(--gold)' }}>NEXT UP →</span>}
+                                {idx === 0 && <span className="text-[10px] mr-1.5 font-semibold" style={{ color: 'var(--gold)' }}>NEXT UP &rarr;</span>}
                                 {h.hypothesis}
                               </div>
                             </div>
@@ -563,7 +1228,7 @@ export default function CroPage() {
       {results.length > 0 && (
         <section>
           <h2 className="text-sm font-semibold mb-3 flex items-center gap-2" style={{ color: 'var(--text-primary)' }}>
-            <span style={{ color: 'var(--gold)' }}>◆</span>
+            <span style={{ color: 'var(--gold)' }}>&#9670;</span>
             <BarChart3 size={14} style={{ color: 'var(--gold)' }} />
             Variant Results
           </h2>
@@ -584,7 +1249,7 @@ export default function CroPage() {
                   <TableRow key={r.id} style={{ borderColor: 'hsl(45 10% 18%)' }}>
                     <TableCell className="py-2.5 text-xs" style={{ color: 'var(--text-muted)' }}>{r.snapshot_date}</TableCell>
                     <TableCell className="py-2.5 text-xs font-medium" style={{ color: 'var(--text-primary)' }}>
-                      {r.ab_experiments?.name || '—'}
+                      {r.ab_experiments?.name || '\u2014'}
                     </TableCell>
                     <TableCell className="py-2.5">
                       <span
@@ -615,11 +1280,14 @@ export default function CroPage() {
         </section>
       )}
 
-      {/* ─── COMPLETED EXPERIMENTS ─── */}
-      {completedExperiments.length > 0 && (
+      {/* ─── TEST ARCHIVE (replaces old Completed Experiments) ─── */}
+      <TestArchiveSection archive={archive} conversionHistory={conversionHistory} />
+
+      {/* ─── COMPLETED EXPERIMENTS (shown only if no archive data yet) ─── */}
+      {archive.length === 0 && completedExperiments.length > 0 && (
         <section>
           <h2 className="text-sm font-semibold mb-3 flex items-center gap-2" style={{ color: 'var(--text-primary)' }}>
-            <span style={{ color: 'var(--gold)' }}>◆</span>
+            <span style={{ color: 'var(--gold)' }}>&#9670;</span>
             <CheckCircle2 size={14} style={{ color: 'var(--gold)' }} />
             Completed Experiments
           </h2>
