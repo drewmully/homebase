@@ -34,6 +34,19 @@ interface Experiment {
   started_at: string
   ended_at: string | null
   created_at: string
+  primary_metric?: string | null
+}
+
+/* Map a primary_metric value to a short human label for the badge. */
+function primaryMetricLabel(metric: string | null | undefined): string {
+  switch (metric) {
+    case 'purchase': return 'Purchase'
+    case 'plan_selection': return 'Plan Selection'
+    case 'onboarding_start': return 'Onboarding Start'
+    case 'registration': return 'Registration'
+    case 'dashboard_view': return 'Dashboard View'
+    default: return 'Purchase'
+  }
 }
 
 interface Hypothesis {
@@ -1025,6 +1038,13 @@ export default function CroPage() {
                     style={{ background: 'rgba(96,165,250,0.1)', color: '#60a5fa', border: '1px solid rgba(96,165,250,0.3)' }}
                   >
                     {exp.page}
+                  </span>
+                  <span
+                    className="rounded-full px-2 py-0.5 text-[10px] font-semibold"
+                    title="Primary metric this experiment is optimizing for"
+                    style={{ background: 'rgba(201,168,76,0.1)', color: '#C9A84C', border: '1px solid rgba(201,168,76,0.3)' }}
+                  >
+                    Optimizing: {primaryMetricLabel(exp.primary_metric)}
                   </span>
                   <span className="ml-auto flex items-center gap-1 text-xs" style={{ color: 'var(--text-muted)' }}>
                     <Clock size={12} /> {daysSince(exp.started_at)}d running
