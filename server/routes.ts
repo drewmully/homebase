@@ -94,11 +94,11 @@ export async function registerRoutes(
     if (POSTHOG_API_KEY) {
       try {
         const [homepage, onboarding, planSelect, purchase, dashboard] = await Promise.all([
-          queryPostHog("SELECT count(distinct person_id) FROM events WHERE event = '$pageview' AND properties.$pathname = '/'", days),
-          queryPostHog("SELECT count(distinct person_id) FROM events WHERE event = '$pageview' AND properties.$pathname LIKE '%/onboarding%'", days),
+          queryPostHog("SELECT count(distinct person_id) FROM events WHERE event = '$pageview' AND (properties.$current_url LIKE '%mymully.com/' OR properties.$current_url LIKE '%mymully.com/?%')", days),
+          queryPostHog("SELECT count(distinct person_id) FROM events WHERE event = '$pageview' AND properties.$current_url LIKE '%/onboarding%'", days),
           queryPostHog("SELECT count(distinct person_id) FROM events WHERE event = 'subscription_state'", days),
           queryPostHog("SELECT count(distinct person_id) FROM events WHERE event = 'purchase'", days),
-          queryPostHog("SELECT count(distinct person_id) FROM events WHERE event = '$pageview' AND (properties.$pathname LIKE '%/home%' OR properties.$pathname LIKE '%/dashboard%')", days),
+          queryPostHog("SELECT count(distinct person_id) FROM events WHERE event = '$pageview' AND (properties.$current_url LIKE '%/home%' OR properties.$current_url LIKE '%/dashboard%')", days),
         ]);
 
         const result: FunnelResult = {
