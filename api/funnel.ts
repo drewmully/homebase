@@ -101,16 +101,17 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
   if (POSTHOG_API_KEY) {
     try {
       const [homepage, onboarding, planSelect, purchase, dashboard] = await Promise.all([
-        queryPostHog("SELECT count(distinct distinct_id) FROM events WHERE event = '$pageview' AND (properties.$current_url LIKE '%mymully.com/' OR properties.$current_url LIKE '%mymully.com/?%')", days),
-        queryPostHog("SELECT count(distinct distinct_id) FROM events WHERE event = '$pageview' AND properties.$current_url LIKE '%/onboarding%'", days),
+        queryPostHog("SELECT count(distinct distinct_id) FROM events WHERE event = '$pageview' AND (properties['$current_url'] LIKE '%mymully.com/' OR properties['$current_url'] LIKE '%mymully.com/?%')", days),
+        queryPostHog("SELECT count(distinct distinct_id) FROM events WHERE event = '$pageview' AND properties['$current_url'] LIKE '%/onboarding%'", days),
         queryPostHog("SELECT count(distinct distinct_id) FROM events WHERE event = 'subscription_state'", days),
         queryPostHog("SELECT count(distinct distinct_id) FROM events WHERE event = 'purchase'", days),
-        queryPostHog("SELECT count(distinct distinct_id) FROM events WHERE event = '$pageview' AND (properties.$current_url LIKE '%/home%' OR properties.$current_url LIKE '%/dashboard%')", days),
+        queryPostHog("SELECT count(distinct distinct_id) FROM events WHERE event = '$pageview' AND (properties['$current_url'] LIKE '%/home%' OR properties['$current_url'] LIKE '%/dashboard%')", days),
       ]);
 
       if (debug) {
+        const sampleUrls = await queryPostHog("SELECT distinct properties['$current_url'] FROM events WHERE event = '$pageview' LIMIT 10", days).catch(() => ({ count: 0, raw: null }));
         res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ homepage, onboarding, planSelect, purchase, dashboard }));
+        res.end(JSON.stringify({ homepage, onboarding, planSelect, purchase, dashboard, sampleUrls }));
         return;
       }
 
