@@ -435,7 +435,11 @@ function ScorecardCell({
   const [inputVal, setInputVal] = useState('')
   const inputRef = useRef<HTMLInputElement>(null)
 
-  const rawVal = entry?.value ?? entry?.auto_value ?? null
+  // Auto-filled rows: prefer fresh auto_value over stale manual value. Manual rows: use value.
+  const isAutoFilled = row.data_source !== 'manual' && !!row.auto_fill_query
+  const rawVal = isAutoFilled
+    ? (entry?.auto_value ?? entry?.value ?? null)
+    : (entry?.value ?? entry?.auto_value ?? null)
   const isFutureWeek = new Date(weekStart) > new Date()
   const measurable = row.measurable || ''
 

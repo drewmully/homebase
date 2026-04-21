@@ -3,6 +3,12 @@
   "outputDirectory": "dist/public",
   "installCommand": "npm install",
   "framework": null,
+  "crons": [
+    {
+      "path": "/api/cron/scorecard-auto-fill",
+      "schedule": "0 6 * * *"
+    }
+  ],
   "rewrites": [
     { "source": "/api/(.*)", "destination": "/api/$1" },
     { "source": "/(.*)", "destination": "/index.html" }
