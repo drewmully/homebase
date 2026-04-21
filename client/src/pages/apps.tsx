@@ -5,7 +5,7 @@ import { useAppKV } from '@/lib/hooks'
 import {
   Activity, Mountain, AlertTriangle, TrendingUp,
   DollarSign, Bot, Brain, Compass, LayoutGrid,
-  FileText, BarChart2, Megaphone, Clock, Users, Receipt
+  FileText, BarChart2, Megaphone, Clock, Users, Receipt, Send
 } from 'lucide-react'
 
 // ─────────────────────────────────────────────
@@ -278,6 +278,13 @@ export default function AppsPage() {
       stat: 'Coming',
       path: '/marketing',
       comingSoon: true,
+    },
+    {
+      id: 'campaigns',
+      icon: Send,
+      name: 'Campaigns',
+      stat: null,
+      path: '/campaigns',
     },
     {
       id: 'ap',

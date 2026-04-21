@@ -7,6 +7,14 @@
     {
       "path": "/api/cron/scorecard-auto-fill",
       "schedule": "0 6 * * *"
+    },
+    {
+      "path": "/api/cron/campaign-generator",
+      "schedule": "0 14 * * 1"
+    },
+    {
+      "path": "/api/cron/campaign-sender",
+      "schedule": "*/15 * * * *"
     }
   ],
   "rewrites": [
