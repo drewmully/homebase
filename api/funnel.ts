@@ -115,8 +115,8 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
 
   if (POSTHOG_API_KEY) {
     if (range === "debug") {
-      const eventTypes = await queryPostHogRaw("SELECT event, count() AS c FROM events GROUP BY event ORDER BY c DESC LIMIT 20", 30);
-      const samplePageviews = await queryPostHogRaw("SELECT properties['$current_url'], count() AS c FROM events WHERE event = '$pageview' GROUP BY properties['$current_url'] ORDER BY c DESC LIMIT 10", 30);
+      const eventTypes = await queryPostHogRaw("SELECT event, count(*) AS c FROM events GROUP BY event ORDER BY c DESC LIMIT 20", 30);
+      const samplePageviews = await queryPostHogRaw("SELECT properties['$current_url'] FROM events WHERE event = '$pageview' LIMIT 10", 30);
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ eventTypes, samplePageviews }));
       return;
