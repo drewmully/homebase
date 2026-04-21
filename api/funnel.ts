@@ -109,9 +109,9 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
       ]);
 
       if (debug) {
-        const sampleUrls = await queryPostHog("SELECT distinct properties['$current_url'] FROM events WHERE event = '$pageview' LIMIT 10", days).catch(() => ({ count: 0, raw: null }));
+        const eventTypes = await queryPostHog("SELECT event, count() AS c FROM events GROUP BY event ORDER BY c DESC LIMIT 20", days).catch(() => ({ count: 0, raw: null }));
         res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ homepage, onboarding, planSelect, purchase, dashboard, sampleUrls }));
+        res.end(JSON.stringify({ homepage, onboarding, planSelect, purchase, dashboard, eventTypes }));
         return;
       }
 
