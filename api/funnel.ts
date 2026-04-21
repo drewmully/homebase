@@ -20,6 +20,21 @@ interface FunnelResult {
 const cache = new Map<string, { data: FunnelResult; ts: number }>();
 const CACHE_TTL = 5 * 60 * 1000;
 
+async function queryPostHogRaw(hogql: string, days: number): Promise<any> {
+  const after = new Date(Date.now() - days * 86400000).toISOString().slice(0, 10);
+  const query = `${hogql} AND toDate(timestamp) >= toDate('${after}')`;
+  const res = await fetch(
+    `https://app.posthog.com/api/projects/${POSTHOG_PROJECT_ID}/query`,
+    {
+      method: "POST",
+      headers: { Authorization: `Bearer ${POSTHOG_API_KEY}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ query: { kind: "HogQLQuery", query } }),
+    }
+  );
+  if (!res.ok) return { error: await res.text() };
+  return res.json();
+}
+
 async function queryPostHog(hogql: string, days: number): Promise<number> {
   const after = new Date(Date.now() - days * 86400000).toISOString().slice(0, 10);
   const query = `${hogql} AND toDate(timestamp) >= toDate('${after}')`;
@@ -99,6 +114,14 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
   }
 
   if (POSTHOG_API_KEY) {
+    if (range === "debug") {
+      const eventTypes = await queryPostHogRaw("SELECT event, count() AS c FROM events GROUP BY event ORDER BY c DESC LIMIT 20", 30);
+      const samplePageviews = await queryPostHogRaw("SELECT properties['$current_url'], count() AS c FROM events WHERE event = '$pageview' GROUP BY properties['$current_url'] ORDER BY c DESC LIMIT 10", 30);
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ eventTypes: eventTypes?.results, samplePageviews: samplePageviews?.results }));
+      return;
+    }
+
     try {
       const [homepage, onboarding, planSelect, purchase, dashboard] = await Promise.all([
         queryPostHog("SELECT count(distinct distinct_id) FROM events WHERE event = '$pageview' AND (properties['$current_url'] LIKE '%mymully.com/' OR properties['$current_url'] LIKE '%mymully.com/?%')", days),
