@@ -20,7 +20,7 @@ interface FunnelResult {
 const cache = new Map<string, { data: FunnelResult; ts: number }>();
 const CACHE_TTL = 5 * 60 * 1000;
 
-async function queryPostHog(hogql: string, days: number): Promise<{ count: number; raw: any }> {
+async function queryPostHog(hogql: string, days: number): Promise<number> {
   const after = new Date(Date.now() - days * 86400000).toISOString().slice(0, 10);
   const query = `${hogql} AND toDate(timestamp) >= toDate('${after}')`;
   const res = await fetch(
@@ -36,7 +36,7 @@ async function queryPostHog(hogql: string, days: number): Promise<{ count: numbe
   );
   if (!res.ok) throw new Error(`PostHog ${res.status}: ${await res.text()}`);
   const json = await res.json();
-  return { count: Number(json?.results?.[0]?.[0] ?? 0), raw: { query, results: json?.results, error: json?.error } };
+  return Number(json?.results?.[0]?.[0] ?? 0);
 }
 
 const SUPABASE_URL = "https://xnfjdbpjuaezxjgargto.supabase.co";
@@ -88,11 +88,11 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
 
   const url = new URL(req.url || "/", "http://localhost");
   const range = url.searchParams.get("range") || "7d";
-  const debug = url.searchParams.get("debug") === "1";
+
   const days = range === "24h" ? 1 : range === "30d" ? 30 : 7;
 
   const cached = cache.get(range);
-  if (cached && !debug && Date.now() - cached.ts < CACHE_TTL) {
+  if (cached && Date.now() - cached.ts < CACHE_TTL) {
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify(cached.data));
     return;
@@ -108,23 +108,16 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
         queryPostHog("SELECT count(distinct distinct_id) FROM events WHERE event = '$pageview' AND (properties['$current_url'] LIKE '%/home%' OR properties['$current_url'] LIKE '%/dashboard%')", days),
       ]);
 
-      if (debug) {
-        const eventTypes = await queryPostHog("SELECT event, count() AS c FROM events GROUP BY event ORDER BY c DESC LIMIT 20", days).catch(() => ({ count: 0, raw: null }));
-        res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ homepage, onboarding, planSelect, purchase, dashboard, eventTypes }));
-        return;
-      }
-
       const result: FunnelResult = {
         range,
         steps: [
-          { label: "Homepage", count: homepage.count, color: "#60a5fa" },
-          { label: "Onboarding", count: onboarding.count, color: "#c084fc" },
-          { label: "Plan Select", count: planSelect.count, color: "#f59e0b" },
-          { label: "Purchase", count: purchase.count, color: "#4ade80" },
-          { label: "Dashboard", count: dashboard.count, color: "#C9A84C" },
+          { label: "Homepage", count: homepage, color: "#60a5fa" },
+          { label: "Onboarding", count: onboarding, color: "#c084fc" },
+          { label: "Plan Select", count: planSelect, color: "#f59e0b" },
+          { label: "Purchase", count: purchase, color: "#4ade80" },
+          { label: "Dashboard", count: dashboard, color: "#C9A84C" },
         ],
-        purchaseRate: homepage.count > 0 ? purchase.count / homepage.count : 0,
+        purchaseRate: homepage > 0 ? purchase / homepage : 0,
         source: "posthog",
       };
       cache.set(range, { data: result, ts: Date.now() });
