@@ -4,6 +4,7 @@ import { supabase } from '@/lib/supabase'
 import { useAppKV, useUpdateFocusEngine } from '@/lib/hooks'
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceLine, CartesianGrid } from 'recharts'
 import { Check, Flame, AlertCircle, HelpCircle } from 'lucide-react'
+import { FunnelChart } from '@/components/FunnelChart'
 
 // ─────────────────────────────────────────────
 // Helpers
@@ -824,6 +825,14 @@ export default function PulsePage() {
         <h1 className="text-lg font-semibold" style={{ color: 'var(--text-primary)' }}>Pulse</h1>
         <p className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>Your daily operations snapshot</p>
       </div>
+
+      {/* Section 0: Live Funnel */}
+      <section>
+        <h2 className="text-sm font-semibold mb-3 flex items-center gap-2" style={{ color: 'var(--text-primary)' }}>
+          <span style={{ color: 'var(--gold)' }}>◆</span> Conversion Funnel
+        </h2>
+        <FunnelChart />
+      </section>
 
       {/* Section 1: Focus Engine */}
       <section>
