@@ -20,15 +20,13 @@ interface FunnelResult {
 const cache = new Map<string, { data: FunnelResult; ts: number }>();
 const CACHE_TTL = 5 * 60 * 1000;
 
-async function queryPostHogRaw(hogql: string, days: number): Promise<any> {
-  const after = new Date(Date.now() - days * 86400000).toISOString().slice(0, 10);
-  const query = `${hogql} AND toDate(timestamp) >= toDate('${after}')`;
+async function queryPostHogRaw(hogql: string): Promise<any> {
   const res = await fetch(
     `https://app.posthog.com/api/projects/${POSTHOG_PROJECT_ID}/query`,
     {
       method: "POST",
       headers: { Authorization: `Bearer ${POSTHOG_API_KEY}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ query: { kind: "HogQLQuery", query } }),
+      body: JSON.stringify({ query: { kind: "HogQLQuery", query: hogql } }),
     }
   );
   if (!res.ok) return { error: await res.text() };
@@ -115,8 +113,8 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
 
   if (POSTHOG_API_KEY) {
     if (range === "debug") {
-      const eventTypes = await queryPostHogRaw("SELECT event, count(*) AS c FROM events GROUP BY event ORDER BY c DESC LIMIT 20", 30);
-      const samplePageviews = await queryPostHogRaw("SELECT properties['$current_url'] FROM events WHERE event = '$pageview' LIMIT 10", 30);
+      const eventTypes = await queryPostHogRaw("SELECT event, count() FROM events GROUP BY event ORDER BY count() DESC LIMIT 20");
+      const samplePageviews = await queryPostHogRaw("SELECT properties.$current_url FROM events WHERE event = '$pageview' LIMIT 10");
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ eventTypes, samplePageviews }));
       return;
@@ -124,11 +122,11 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
 
     try {
       const [homepage, onboarding, planSelect, purchase, dashboard] = await Promise.all([
-        queryPostHog("SELECT count(distinct distinct_id) FROM events WHERE event = '$pageview' AND (properties['$current_url'] LIKE '%mymully.com/' OR properties['$current_url'] LIKE '%mymully.com/?%')", days),
-        queryPostHog("SELECT count(distinct distinct_id) FROM events WHERE event = '$pageview' AND properties['$current_url'] LIKE '%/onboarding%'", days),
+        queryPostHog("SELECT count(distinct distinct_id) FROM events WHERE event = '$pageview' AND (properties.$current_url LIKE '%mymully.com/' OR properties.$current_url LIKE '%mymully.com/?%')", days),
+        queryPostHog("SELECT count(distinct distinct_id) FROM events WHERE event = '$pageview' AND properties.$current_url LIKE '%/onboarding%'", days),
         queryPostHog("SELECT count(distinct distinct_id) FROM events WHERE event = 'subscription_state'", days),
         queryPostHog("SELECT count(distinct distinct_id) FROM events WHERE event = 'purchase'", days),
-        queryPostHog("SELECT count(distinct distinct_id) FROM events WHERE event = '$pageview' AND (properties['$current_url'] LIKE '%/home%' OR properties['$current_url'] LIKE '%/dashboard%')", days),
+        queryPostHog("SELECT count(distinct distinct_id) FROM events WHERE event = '$pageview' AND (properties.$current_url LIKE '%/home%' OR properties.$current_url LIKE '%/dashboard%')", days),
       ]);
 
       const result: FunnelResult = {
