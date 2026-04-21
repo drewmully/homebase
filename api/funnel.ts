@@ -39,9 +39,12 @@ async function queryPostHog(hogql: string, days: number): Promise<number> {
   return Number(json?.results?.[0]?.[0] ?? 0);
 }
 
+const SUPABASE_URL = "https://xnfjdbpjuaezxjgargto.supabase.co";
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InhuZmpkYnBqdWFlenhqZ2FyZ3RvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ0NzMxOTAsImV4cCI6MjA5MDA0OTE5MH0.rY1jpedgZ0qJmIRNJLYJNCuIBwBTljWJGpcZI9-YN_g";
+
 async function getFunnelFromSupabase(range: string): Promise<FunnelResult | null> {
-  const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
-  const supabaseKey = process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY;
+  const supabaseUrl = SUPABASE_URL;
+  const supabaseKey = SUPABASE_ANON_KEY;
   if (!supabaseUrl || !supabaseKey) return null;
 
   try {
