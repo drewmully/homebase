@@ -197,9 +197,13 @@ function confidenceBadge(conf: number): { label: string; color: string; bg: stri
 }
 
 /* ─── Funnel step component ─── */
-function FunnelStep({ label, value, pct, color, isLast }: {
-  label: string; value: string; pct?: string; color: string; isLast?: boolean
+function FunnelStep({ label, value, pct, color, isLast, deltaPct, deltaLabel }: {
+  label: string; value: string; pct?: string; color: string; isLast?: boolean;
+  deltaPct?: number | null; deltaLabel?: string
 }) {
+  const hasDelta = typeof deltaPct === 'number' && Number.isFinite(deltaPct)
+  const deltaColor = !hasDelta ? '#8a8778' : (deltaPct! >= 0 ? '#4ade80' : '#f87171')
+  const deltaSign = hasDelta && deltaPct! >= 0 ? '+' : ''
   return (
     <div className="flex items-center gap-2 flex-1 min-w-[120px]">
       <div className="flex-1">
@@ -207,7 +211,13 @@ function FunnelStep({ label, value, pct, color, isLast }: {
           {label}
         </div>
         <div className="text-xl font-bold" style={{ color }}>{value}</div>
-        {pct && <div className="text-[10px] mt-0.5" style={{ color: 'var(--text-muted)' }}>{pct} of homepage</div>}
+        {hasDelta && (
+          <div className="text-[10px] mt-0.5 flex items-center gap-1">
+            <span style={{ color: deltaColor, fontWeight: 600 }}>{deltaSign}{deltaPct!.toFixed(1)}%</span>
+            {deltaLabel && <span style={{ color: 'var(--text-muted)' }}>{deltaLabel}</span>}
+          </div>
+        )}
+        {!hasDelta && pct && <div className="text-[10px] mt-0.5" style={{ color: 'var(--text-muted)' }}>{pct}{pct.includes('of') ? '' : ' of homepage'}</div>}
       </div>
       {!isLast && <ArrowRight size={14} style={{ color: 'hsl(45 10% 25%)' }} className="shrink-0 hidden md:block" />}
     </div>
@@ -735,10 +745,10 @@ export default function CroPage() {
         .limit(30),
       supabase
         .from('ab_results')
-        .select('snapshot_date, conversion_rate_purchase, variant')
+        .select('snapshot_date, conversion_rate_purchase, variant, page_views, purchases, experiment_id, raw_data')
         .eq('variant', 'baseline-all')
         .order('snapshot_date', { ascending: true })
-        .limit(30),
+        .limit(60),
       supabase
         .from('ab_experiment_archive')
         .select('*')
@@ -750,11 +760,25 @@ export default function CroPage() {
     setCompletedExperiments((completedData as Experiment[]) || [])
     setHypotheses((hypothesesData as Hypothesis[]) || [])
     setResults((resultsData as ResultRow[]) || [])
+    // Dedupe baseline rows by snapshot_date. Multiple active experiments each write
+    // their own 'baseline-all' row per day, which produces duplicate x-axis points.
+    // Strategy: per date, pick the row with the most page_views (that's the real sitewide funnel).
+    const bestByDate = new Map<string, any>()
+    for (const r of (conversionData || []) as any[]) {
+      const existing = bestByDate.get(r.snapshot_date)
+      if (!existing || (r.page_views || 0) > (existing.page_views || 0)) {
+        bestByDate.set(r.snapshot_date, r)
+      }
+    }
     setConversionHistory(
-      (conversionData || []).map((r: any) => ({
-        date: r.snapshot_date,
-        rate: r.conversion_rate_purchase ? Number(r.conversion_rate_purchase) * 100 : 0,
-      }))
+      Array.from(bestByDate.values())
+        .sort((a, b) => a.snapshot_date.localeCompare(b.snapshot_date))
+        .map((r: any) => ({
+          date: r.snapshot_date,
+          rate: r.conversion_rate_purchase ? Number(r.conversion_rate_purchase) * 100 : 0,
+          views: r.page_views || 0,
+          purchases: r.purchases || 0,
+        }))
     )
     setArchive((archiveData as ArchiveRow[]) || [])
     setLoading(false)
@@ -882,11 +906,19 @@ export default function CroPage() {
 
   // Parse funnel numbers from baseline raw_data
   const raw = funnelBaseline?.raw_data || {}
-  const homepageViews = raw.unique_page_view_users || funnelBaseline?.page_views || 0
+  const homepageViews = raw.unique_homepage_users || raw.unique_page_view_users || funnelBaseline?.page_views || 0
   const onboardingStarts = raw.onboarding_starts || raw.unique_onboarding_users || 0
-  const planSelections = raw.plan_selections || raw.subscription_state || 0
-  const purchases = funnelBaseline?.purchases || raw.unique_purchase_users || 0
+  const planSelections = raw.plan_selections || raw.subscription_state || raw.unique_plan_selection_users || 0
+  const purchases = raw.purchases || funnelBaseline?.purchases || raw.unique_purchase_users || 0
   const dashboardViews = raw.dashboard_visits || funnelBaseline?.dashboard_visits || raw.wallet_users || 0
+  const newAccounts = raw.new_accounts || 0
+  const homepageViewsPrior = raw.homepage_views_prior || 0
+  const homepagePctChange = typeof raw.homepage_views_pct_change === 'number'
+    ? raw.homepage_views_pct_change
+    : (homepageViewsPrior > 0 ? ((homepageViews - homepageViewsPrior) / homepageViewsPrior) * 100 : null)
+  const newAccountsPctChange = typeof raw.new_accounts_pct_change === 'number'
+    ? raw.new_accounts_pct_change
+    : null
   const purchaseRate = homepageViews > 0 ? (purchases / homepageViews) : 0
 
   // Funnel bar chart data
@@ -894,6 +926,7 @@ export default function CroPage() {
     { step: 'Homepage', count: homepageViews, color: '#60a5fa' },
     { step: 'Onboarding', count: onboardingStarts, color: '#c084fc' },
     { step: 'Plan Select', count: planSelections, color: '#f59e0b' },
+    { step: 'New Account', count: newAccounts, color: '#34d399' },
     { step: 'Purchase', count: purchases, color: '#4ade80' },
     { step: 'Dashboard', count: dashboardViews, color: '#C9A84C' },
   ]
@@ -902,16 +935,13 @@ export default function CroPage() {
   const testingHypotheses = hypotheses.filter(h => h.status === 'testing')
   const queuedHypotheses = hypotheses.filter(h => h.status === 'pending')
 
-  // Next cron run info
-  const nextCronDays = (() => {
+  // Next cron run info. The cron runs every 6 hours at :00 UTC (0, 6, 12, 18).
+  const nextCronHours = (() => {
     const now = new Date()
-    const cronDays = [1,4,7,10,13,16,19,22,25,28]
-    const today = now.getUTCDate()
-    const next = cronDays.find(d => d > today) || cronDays[0]
-    if (next > today) return next - today
-    // next month
-    const daysInMonth = new Date(now.getUTCFullYear(), now.getUTCMonth() + 1, 0).getUTCDate()
-    return (daysInMonth - today) + next
+    const h = now.getUTCHours()
+    const nextSlot = [0, 6, 12, 18].find(s => s > h)
+    if (typeof nextSlot === 'number') return nextSlot - h
+    return 24 - h // next 0 UTC
   })()
 
   return (
@@ -935,14 +965,14 @@ export default function CroPage() {
             CRO Lab
           </h1>
           <p className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>
-            Automated A/B testing, analyzing every 3 days
+            Automated A/B testing, analyzing every 6 hours
           </p>
         </div>
         <div
           className="rounded-lg px-3 py-1.5 text-[10px] font-medium flex items-center gap-1.5"
           style={{ background: 'rgba(74,222,128,0.08)', color: '#4ade80', border: '1px solid rgba(74,222,128,0.2)' }}
         >
-          <Zap size={10} /> Auto-pilot active &middot; next analysis in {nextCronDays}d
+          <Zap size={10} /> Auto-pilot active &middot; next analysis in {nextCronHours}h
         </div>
       </div>
 
@@ -963,9 +993,23 @@ export default function CroPage() {
           style={{ background: 'var(--surface-card)', border: '1px solid hsl(45 10% 20%)' }}
         >
           <div className="flex flex-wrap md:flex-nowrap gap-4 md:gap-2">
-            <FunnelStep label="Homepage" value={formatNum(homepageViews)} color="#60a5fa" />
+            <FunnelStep
+              label="Site Visitors"
+              value={formatNum(homepageViews)}
+              color="#60a5fa"
+              deltaPct={homepagePctChange}
+              deltaLabel="vs prior 3d"
+            />
             <FunnelStep label="Onboarding Start" value={formatNum(onboardingStarts)} pct={homepageViews > 0 ? `${((onboardingStarts/homepageViews)*100).toFixed(1)}%` : undefined} color="#c084fc" />
             <FunnelStep label="Plan Selection" value={formatNum(planSelections)} pct={homepageViews > 0 ? `${((planSelections/homepageViews)*100).toFixed(1)}%` : undefined} color="#f59e0b" />
+            <FunnelStep
+              label="New Account"
+              value={formatNum(newAccounts)}
+              pct={homepageViews > 0 ? `${((newAccounts/homepageViews)*100).toFixed(1)}% of visitors` : undefined}
+              color="#34d399"
+              deltaPct={newAccountsPctChange}
+              deltaLabel="vs prior 3d"
+            />
             <FunnelStep label="Purchase" value={formatNum(purchases)} pct={homepageViews > 0 ? `${((purchases/homepageViews)*100).toFixed(1)}%` : undefined} color="#4ade80" />
             <FunnelStep label="Dashboard" value={formatNum(dashboardViews)} pct={homepageViews > 0 ? `${((dashboardViews/homepageViews)*100).toFixed(1)}%` : undefined} color="#C9A84C" isLast />
           </div>
@@ -973,7 +1017,7 @@ export default function CroPage() {
           {/* Purchase rate callout */}
           <div className="mt-4 pt-3 flex items-center gap-3" style={{ borderTop: '1px solid hsl(45 10% 18%)' }}>
             <TrendingUp size={14} style={{ color: 'var(--gold)' }} />
-            <span className="text-xs" style={{ color: 'var(--text-muted)' }}>Purchase rate</span>
+            <span className="text-xs" style={{ color: 'var(--text-muted)' }}>Purchase rate (3-day trailing)</span>
             <span className="text-lg font-bold" style={{ color: 'var(--gold)' }}>{(purchaseRate * 100).toFixed(2)}%</span>
             <span className="text-[10px] ml-auto" style={{ color: 'var(--text-muted)' }}>
               Primary optimization target
@@ -1124,6 +1168,9 @@ export default function CroPage() {
         <section>
           <h2 className="text-sm font-semibold mb-3 flex items-center gap-2" style={{ color: 'var(--text-primary)' }}>
             <span style={{ color: 'var(--gold)' }}>&#9670;</span> Purchase Rate Trend
+            <span className="text-xs font-normal" style={{ color: 'var(--text-muted)' }}>
+              {'\u2014'} 3-day trailing, by snapshot date
+            </span>
           </h2>
           <div className="rounded-xl p-4" style={{ background: 'var(--surface-card)', border: '1px solid hsl(45 10% 20%)' }}>
             <ResponsiveContainer width="100%" height={200}>
