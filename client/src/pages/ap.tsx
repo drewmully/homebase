@@ -812,6 +812,8 @@ export default function APPage() {
     }).eq('id', inv.id)
     qc.invalidateQueries({ queryKey: ['invoices'] })
     qc.invalidateQueries({ queryKey: ['v_invoice_summary'] })
+    qc.invalidateQueries({ queryKey: ['app_kv', 'forecast_mully'] })
+    qc.invalidateQueries({ queryKey: ['app_kv', 'forecast_mfs'] })
   }
 
   const handleEdit = (inv: Invoice) => {
@@ -823,6 +825,8 @@ export default function APPage() {
     await supabase.from('invoices').update(data).eq('id', id)
     qc.invalidateQueries({ queryKey: ['invoices'] })
     qc.invalidateQueries({ queryKey: ['v_invoice_summary'] })
+    qc.invalidateQueries({ queryKey: ['app_kv', 'forecast_mully'] })
+    qc.invalidateQueries({ queryKey: ['app_kv', 'forecast_mfs'] })
     setEditingInvoice(null)
   }
 
@@ -832,6 +836,8 @@ export default function APPage() {
       created_at: new Date().toISOString(),
     })
     qc.invalidateQueries({ queryKey: ['invoices'] })
+    qc.invalidateQueries({ queryKey: ['app_kv', 'forecast_mully'] })
+    qc.invalidateQueries({ queryKey: ['app_kv', 'forecast_mfs'] })
     qc.invalidateQueries({ queryKey: ['v_invoice_summary'] })
   }
 
