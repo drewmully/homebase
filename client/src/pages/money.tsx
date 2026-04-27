@@ -804,9 +804,9 @@ function ForecastChartSection({ entity }: { entity: 'mully' | 'mfs' }) {
               <YAxis tick={{ fill: '#8a8778', fontSize: 10 }} axisLine={false} tickLine={false} tickFormatter={(v) => fmtShort(v)} width={56} />
               <Tooltip content={<StackedBarTooltip />} />
               {hasNegative && <ReferenceLine y={0} stroke="#ef4444" strokeDasharray="5 3" strokeWidth={1.5} />}
-              {/* Divider between historical and forecast */}
-              {historicalData && historicalData.length > 0 && (
-                <ReferenceLine x={chartData[historicalData.length - 1]?.label} stroke="var(--gold)" strokeDasharray="4 4" strokeWidth={1} label={{ value: 'Now', position: 'top', fill: 'var(--gold)', fontSize: 10 }} />
+              {/* Divider between historical and forecast — anchored to FIRST forecast week (current week) */}
+              {historicalData && historicalData.length > 0 && chartData[historicalData.length] && (
+                <ReferenceLine x={chartData[historicalData.length]?.label} stroke="var(--gold)" strokeDasharray="4 4" strokeWidth={1} label={{ value: 'Now', position: 'top', fill: 'var(--gold)', fontSize: 10 }} />
               )}
 
               {/* Stacked inflow bars (positive) */}
