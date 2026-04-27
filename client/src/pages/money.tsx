@@ -1383,32 +1383,25 @@ function AssumptionsSection({ entity }: { entity: 'mully' | 'mfs' }) {
 // ─────────────────────────────────────────────
 
 function ForecastVsActualSection({ entity }: { entity: 'mully' | 'mfs' }) {
-  const { data: actuals, isLoading: loadingActuals } = useQuery({
-    queryKey: ['weekly_actuals', entity],
+  const qc = useQueryClient()
+  const { data: variance, isLoading: loadingVariance } = useQuery({
+    queryKey: ['weekly_variance', entity],
     queryFn: async () => {
       const { data } = await supabase
-        .from('weekly_actuals')
+        .from('v_weekly_variance')
         .select('*')
         .eq('entity', entity)
         .order('week_start', { ascending: false })
+        .limit(8)
       return data || []
     },
     staleTime: 30_000,
   })
 
-  const { data: snapshots } = useQuery({
-    queryKey: ['forecast_snapshots', entity],
-    queryFn: async () => {
-      const { data } = await supabase
-        .from('forecast_snapshots')
-        .select('*')
-        .eq('entity', entity)
-        .order('forecast_week', { ascending: false })
-        .limit(52)
-      return data || []
-    },
-    staleTime: 30_000,
-  })
+  const handleLockPlan = async () => {
+    await supabase.rpc('lock_weekly_plan', { p_entity: entity })
+    qc.invalidateQueries({ queryKey: ['weekly_variance', entity] })
+  }
 
   const CATEGORY_LABELS: Record<string, string> = {
     other_income: 'Income', client_revenue: 'Client Revenue',
@@ -1419,46 +1412,22 @@ function ForecastVsActualSection({ entity }: { entity: 'mully' | 'mfs' }) {
   }
 
   const weeklyData = useMemo(() => {
-    if (!actuals) return []
-    const grouped: Record<string, Record<string, number>> = {}
-    for (const row of actuals) {
-      const wk = row.week_start
-      if (!grouped[wk]) grouped[wk] = {}
-      grouped[wk][row.category] = (grouped[wk][row.category] || 0) + Number(row.amount)
-    }
-    // Build snapshot lookup
-    const snapMap: Record<string, any> = {}
-    for (const s of (snapshots || [])) {
-      snapMap[s.forecast_week] = s
-    }
+    return (variance || []).map((v: any) => {
+      const d = new Date(v.week_start + 'T00:00:00')
+      const cats = (v.actual_detail || {}) as Record<string, number>
+      return {
+        week: v.week_start,
+        label: `${d.getMonth() + 1}/${d.getDate()}`,
+        status: v.status as 'closed' | 'in_progress' | 'future',
+        plan: { inflows: Number(v.plan_inflows), outflows: Number(v.plan_outflows), net: Number(v.plan_net) },
+        actual: { inflows: Number(v.actual_inflows), outflows: Number(v.actual_outflows), net: Number(v.actual_net) },
+        variance: { inflow: Number(v.inflow_variance), outflow: Number(v.outflow_variance), net: Number(v.net_variance) },
+        categories: cats,
+      }
+    })
+  }, [variance])
 
-    return Object.entries(grouped)
-      .sort((a, b) => b[0].localeCompare(a[0]))
-      .slice(0, 4)
-      .map(([week, cats]) => {
-        const inflows = (cats['other_income'] || 0) + (cats['client_revenue'] || 0)
-        const outflows = Object.entries(cats)
-          .filter(([k]) => !['other_income', 'client_revenue'].includes(k))
-          .reduce((sum, [, v]) => sum + v, 0)
-        const d = new Date(week + 'T00:00:00')
-        const snap = snapMap[week]
-        return {
-          week,
-          label: `${d.getMonth() + 1}/${d.getDate()}`,
-          inflows: Math.round(inflows),
-          outflows: Math.round(outflows),
-          net: Math.round(inflows - outflows),
-          categories: cats,
-          forecast: snap ? {
-            inflows: Number(snap.predicted_inflows),
-            outflows: Number(snap.predicted_outflows),
-            net: Number(snap.predicted_net),
-          } : null,
-        }
-      })
-  }, [actuals, snapshots])
-
-  if (loadingActuals) return <div className="skeleton rounded-xl h-32" />
+  if (loadingVariance) return <div className="skeleton rounded-xl h-32" />
   if (weeklyData.length === 0) return null
 
   return (
@@ -1467,14 +1436,24 @@ function ForecastVsActualSection({ entity }: { entity: 'mully' | 'mfs' }) {
         className="rounded-xl p-5"
         style={{ background: 'var(--surface-card)', border: '1px solid hsl(45 10% 20%)' }}
       >
-        <div className="flex items-center gap-2 mb-4">
-          <TrendingDown size={15} style={{ color: 'var(--gold)' }} />
-          <h2 className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>
-            Forecast vs Actual
-          </h2>
-          <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
-            · Plaid actuals vs forecast predictions
-          </span>
+        <div className="flex items-center justify-between gap-2 mb-4 flex-wrap">
+          <div className="flex items-center gap-2">
+            <TrendingDown size={15} style={{ color: 'var(--gold)' }} />
+            <h2 className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>
+              Plan vs Actual
+            </h2>
+            <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+              · Locked Monday plan vs actuals (Plaid-categorized)
+            </span>
+          </div>
+          <button
+            onClick={handleLockPlan}
+            className="text-[11px] px-2.5 py-1 rounded-md"
+            style={{ background: 'rgba(201,168,76,0.1)', color: 'var(--gold)', border: '1px solid rgba(201,168,76,0.2)' }}
+            title="Lock today's forecast as the official plan for the current week"
+          >
+            Lock This Week
+          </button>
         </div>
 
         <div className="overflow-x-auto">
@@ -1482,51 +1461,44 @@ function ForecastVsActualSection({ entity }: { entity: 'mully' | 'mfs' }) {
             <thead>
               <tr style={{ background: 'hsl(45 10% 13%)' }}>
                 <th className="px-3 py-2 text-left font-medium" style={{ color: 'var(--text-muted)', borderBottom: '1px solid hsl(45 10% 18%)' }}>Week</th>
+                <th className="px-3 py-2 text-center font-medium" style={{ color: 'var(--text-muted)', borderBottom: '1px solid hsl(45 10% 18%)' }}>Status</th>
+                <th className="px-3 py-2 text-right font-medium" style={{ color: 'var(--text-muted)', borderBottom: '1px solid hsl(45 10% 18%)' }}>Plan In</th>
                 <th className="px-3 py-2 text-right font-medium" style={{ color: '#4ade80', borderBottom: '1px solid hsl(45 10% 18%)' }}>Actual In</th>
+                <th className="px-3 py-2 text-right font-medium" style={{ color: 'var(--text-muted)', borderBottom: '1px solid hsl(45 10% 18%)' }}>Plan Out</th>
                 <th className="px-3 py-2 text-right font-medium" style={{ color: '#ef4444', borderBottom: '1px solid hsl(45 10% 18%)' }}>Actual Out</th>
+                <th className="px-3 py-2 text-right font-medium" style={{ color: 'var(--text-muted)', borderBottom: '1px solid hsl(45 10% 18%)' }}>Plan Net</th>
                 <th className="px-3 py-2 text-right font-medium" style={{ color: 'var(--text-primary)', borderBottom: '1px solid hsl(45 10% 18%)' }}>Actual Net</th>
-                <th className="px-3 py-2 text-right font-medium" style={{ color: 'var(--text-muted)', borderBottom: '1px solid hsl(45 10% 18%)' }}>Forecast Net</th>
-                <th className="px-3 py-2 text-right font-medium" style={{ color: 'var(--text-muted)', borderBottom: '1px solid hsl(45 10% 18%)' }}>Variance</th>
-                <th className="px-3 py-2 text-left font-medium" style={{ color: 'var(--text-muted)', borderBottom: '1px solid hsl(45 10% 18%)' }}>Top Outflows</th>
+                <th className="px-3 py-2 text-right font-medium" style={{ color: 'var(--gold)', borderBottom: '1px solid hsl(45 10% 18%)' }}>Variance</th>
+                <th className="px-3 py-2 text-left font-medium" style={{ color: 'var(--text-muted)', borderBottom: '1px solid hsl(45 10% 18%)' }}>Top Actual Outflows</th>
               </tr>
             </thead>
             <tbody>
               {weeklyData.map((wk, i) => {
                 const topCats = Object.entries(wk.categories)
-                  .filter(([k]) => !['other_income', 'client_revenue'].includes(k))
+                  .filter(([k, v]) => !['other_income', 'client_revenue', 'sub_renewals', 'online_store', 'outing_revenue'].includes(k) && Number(v) > 0)
                   .sort((a, b) => Number(b[1]) - Number(a[1]))
                   .slice(0, 3)
-                const variance = wk.forecast ? wk.net - wk.forecast.net : null
+                const statusColor = wk.status === 'closed' ? '#4ade80' : wk.status === 'in_progress' ? '#fbbf24' : '#9ca3af'
+                const statusLabel = wk.status === 'closed' ? 'Closed' : wk.status === 'in_progress' ? 'In progress' : 'Future'
+                const showVar = wk.status !== 'future'
+                const showActual = wk.status !== 'future' && (wk.actual.inflows > 0 || wk.actual.outflows > 0)
                 return (
                   <tr key={wk.week} style={{ background: i % 2 === 0 ? 'var(--surface-card)' : 'hsl(45 10% 14%)' }}>
-                    <td className="px-3 py-2.5 font-medium" style={{ color: 'var(--text-primary)', borderBottom: '1px solid hsl(45 10% 16%)' }}>
-                      {wk.label}
+                    <td className="px-3 py-2.5 font-medium" style={{ color: 'var(--text-primary)', borderBottom: '1px solid hsl(45 10% 16%)' }}>{wk.label}</td>
+                    <td className="px-3 py-2.5 text-center" style={{ borderBottom: '1px solid hsl(45 10% 16%)' }}>
+                      <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: 'hsl(45 10% 18%)', color: statusColor }}>{statusLabel}</span>
                     </td>
-                    <td className="px-3 py-2.5 text-right tabular-nums" style={{ color: '#4ade80', borderBottom: '1px solid hsl(45 10% 16%)' }}>
-                      {wk.inflows > 0 ? fmt(wk.inflows) : '—'}
-                    </td>
-                    <td className="px-3 py-2.5 text-right tabular-nums" style={{ color: '#ef4444', borderBottom: '1px solid hsl(45 10% 16%)' }}>
-                      {fmt(wk.outflows)}
-                    </td>
-                    <td className="px-3 py-2.5 text-right tabular-nums font-semibold" style={{ color: wk.net >= 0 ? '#4ade80' : '#ef4444', borderBottom: '1px solid hsl(45 10% 16%)' }}>
-                      {wk.net >= 0 ? '+' : ''}{fmt(wk.net)}
-                    </td>
-                    <td className="px-3 py-2.5 text-right tabular-nums" style={{ color: 'var(--text-muted)', borderBottom: '1px solid hsl(45 10% 16%)' }}>
-                      {wk.forecast ? `${wk.forecast.net >= 0 ? '+' : ''}${fmt(wk.forecast.net)}` : '—'}
-                    </td>
-                    <td className="px-3 py-2.5 text-right tabular-nums font-medium" style={{ color: variance === null ? 'var(--text-muted)' : variance >= 0 ? '#4ade80' : '#ef4444', borderBottom: '1px solid hsl(45 10% 16%)' }}>
-                      {variance !== null ? (
-                        <span>{variance >= 0 ? '+' : ''}{fmt(variance)}</span>
-                      ) : '—'}
-                    </td>
+                    <td className="px-3 py-2.5 text-right tabular-nums" style={{ color: 'var(--text-muted)', borderBottom: '1px solid hsl(45 10% 16%)' }}>{fmt(wk.plan.inflows)}</td>
+                    <td className="px-3 py-2.5 text-right tabular-nums" style={{ color: '#4ade80', borderBottom: '1px solid hsl(45 10% 16%)' }}>{showActual ? fmt(wk.actual.inflows) : '—'}</td>
+                    <td className="px-3 py-2.5 text-right tabular-nums" style={{ color: 'var(--text-muted)', borderBottom: '1px solid hsl(45 10% 16%)' }}>{fmt(wk.plan.outflows)}</td>
+                    <td className="px-3 py-2.5 text-right tabular-nums" style={{ color: '#ef4444', borderBottom: '1px solid hsl(45 10% 16%)' }}>{showActual ? fmt(wk.actual.outflows) : '—'}</td>
+                    <td className="px-3 py-2.5 text-right tabular-nums" style={{ color: wk.plan.net >= 0 ? '#4ade80' : '#ef4444', opacity: 0.7, borderBottom: '1px solid hsl(45 10% 16%)' }}>{wk.plan.net >= 0 ? '+' : ''}{fmt(wk.plan.net)}</td>
+                    <td className="px-3 py-2.5 text-right tabular-nums font-semibold" style={{ color: showActual ? (wk.actual.net >= 0 ? '#4ade80' : '#ef4444') : 'var(--text-muted)', borderBottom: '1px solid hsl(45 10% 16%)' }}>{showActual ? `${wk.actual.net >= 0 ? '+' : ''}${fmt(wk.actual.net)}` : '—'}</td>
+                    <td className="px-3 py-2.5 text-right tabular-nums font-medium" style={{ color: !showVar || !showActual ? 'var(--text-muted)' : wk.variance.net >= 0 ? '#4ade80' : '#ef4444', borderBottom: '1px solid hsl(45 10% 16%)' }}>{showVar && showActual ? `${wk.variance.net >= 0 ? '+' : ''}${fmt(wk.variance.net)}` : '—'}</td>
                     <td className="px-3 py-2.5" style={{ borderBottom: '1px solid hsl(45 10% 16%)' }}>
                       <div className="flex flex-wrap gap-1">
                         {topCats.map(([cat, amt]) => (
-                          <span
-                            key={cat}
-                            className="text-[10px] px-1.5 py-0.5 rounded"
-                            style={{ background: 'hsl(45 10% 18%)', color: 'var(--text-muted)' }}
-                          >
+                          <span key={cat} className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: 'hsl(45 10% 18%)', color: 'var(--text-muted)' }}>
                             {CATEGORY_LABELS[cat] || cat}: {fmt(Number(amt))}
                           </span>
                         ))}
