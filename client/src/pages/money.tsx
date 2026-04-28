@@ -1777,6 +1777,107 @@ function ExportButton({ entity }: { entity: 'mully' | 'mfs' }) {
       margin: { left: margin, right: margin },
     })
 
+    // --- Page 2 footer: Plan vs Actual variance tracker ---
+    const { data: variance } = await supabase
+      .from('v_weekly_variance')
+      .select('*')
+      .eq('entity', entity)
+      .order('week_start', { ascending: false })
+      .limit(8)
+
+    if (variance && variance.length > 0) {
+      const lastY = (doc as any).lastAutoTable?.finalY || 400
+      let vY = lastY + 24
+
+      // Section header
+      doc.setFillColor(245, 243, 238)
+      doc.rect(margin, vY, pageW - 2 * margin, 18, 'F')
+      doc.setFontSize(10)
+      doc.setFont('helvetica', 'bold')
+      doc.setTextColor(40, 38, 35)
+      doc.text('Plan vs Actual — Variance Tracker', margin + 8, vY + 12)
+      doc.setFont('helvetica', 'normal')
+      doc.setFontSize(7)
+      doc.setTextColor(120, 115, 105)
+      doc.text('Locked Monday plan vs Plaid-categorized actuals', pageW - margin - 8, vY + 12, { align: 'right' })
+
+      // Variance table
+      const varHead = [['Week', 'Status', 'Plan In', 'Actual In', 'In Var', 'Plan Out', 'Actual Out', 'Out Var', 'Plan Net', 'Actual Net', 'Net Variance', 'Top Actual Outflows']]
+      const fmtVar = (v: number) => v === 0 ? '-' : `$${Math.round(v).toLocaleString()}`
+      const fmtSign = (v: number) => v === 0 ? '-' : `${v >= 0 ? '+' : ''}$${Math.round(v).toLocaleString()}`
+      const varBody = variance.map((v: any) => {
+        const wkLabel = (() => {
+          const d = new Date(v.week_start + 'T00:00:00')
+          return `${d.getMonth() + 1}/${d.getDate()}`
+        })()
+        const status = v.status === 'closed' ? 'Closed' : v.status === 'in_progress' ? 'In progress' : 'Future'
+        const showActual = v.status !== 'future' && (Number(v.actual_inflows) > 0 || Number(v.actual_outflows) > 0)
+        const cats = (v.actual_detail || {}) as Record<string, number>
+        const topCats = Object.entries(cats)
+          .filter(([k, val]) => !['other_income', 'client_revenue', 'sub_renewals', 'online_store', 'outing_revenue'].includes(k) && Number(val) > 0)
+          .sort((a, b) => Number(b[1]) - Number(a[1]))
+          .slice(0, 3)
+          .map(([k, val]) => `${k}: $${Math.round(Number(val) / 1000)}K`)
+          .join(', ')
+        return [
+          wkLabel,
+          status,
+          fmtVar(Number(v.plan_inflows)),
+          showActual ? fmtVar(Number(v.actual_inflows)) : '—',
+          showActual ? fmtSign(Number(v.inflow_variance)) : '—',
+          fmtVar(Number(v.plan_outflows)),
+          showActual ? fmtVar(Number(v.actual_outflows)) : '—',
+          showActual ? fmtSign(Number(v.outflow_variance)) : '—',
+          fmtSign(Number(v.plan_net)),
+          showActual ? fmtSign(Number(v.actual_net)) : '—',
+          showActual ? fmtSign(Number(v.net_variance)) : '—',
+          topCats || '—',
+        ]
+      })
+
+      autoTable(doc, {
+        startY: vY + 22,
+        head: varHead,
+        body: varBody,
+        theme: 'plain',
+        headStyles: { fillColor: [40, 38, 35], textColor: [201, 168, 76], fontSize: 6.5, fontStyle: 'bold', halign: 'right', cellPadding: 3 },
+        bodyStyles: { fontSize: 6.5, textColor: [80, 78, 70], halign: 'right', cellPadding: { top: 1.8, bottom: 1.8, left: 3, right: 3 } },
+        columnStyles: {
+          0: { halign: 'left', cellWidth: 36, fontStyle: 'bold', textColor: [30, 28, 25] },
+          1: { halign: 'center', cellWidth: 50 },
+          11: { halign: 'left', cellWidth: 'auto' },
+        },
+        didParseCell: (data: any) => {
+          if (data.section === 'body') {
+            const row = variance[data.row.index]
+            // Status pill colors
+            if (data.column.index === 1) {
+              if (row.status === 'closed') { data.cell.styles.textColor = [22, 163, 74]; data.cell.styles.fontStyle = 'bold' }
+              else if (row.status === 'in_progress') { data.cell.styles.textColor = [202, 138, 4]; data.cell.styles.fontStyle = 'bold' }
+              else { data.cell.styles.textColor = [120, 115, 105] }
+            }
+            // Color variance columns (4=in_var, 7=out_var, 10=net_var)
+            if ([4, 7, 10].includes(data.column.index)) {
+              const txt = String(data.cell.raw)
+              if (txt.startsWith('+')) data.cell.styles.textColor = [22, 163, 74]
+              else if (txt.startsWith('-$')) data.cell.styles.textColor = [200, 50, 50]
+              if (data.column.index === 10) data.cell.styles.fontStyle = 'bold'
+            }
+            // Color actual net (col 9)
+            if (data.column.index === 9) {
+              const txt = String(data.cell.raw)
+              if (txt.startsWith('+')) data.cell.styles.textColor = [22, 163, 74]
+              else if (txt.startsWith('-$')) data.cell.styles.textColor = [200, 50, 50]
+              data.cell.styles.fontStyle = 'bold'
+            }
+            // Plan net col 8: lighter
+            if (data.column.index === 8) data.cell.styles.textColor = [120, 115, 105]
+          }
+        },
+        margin: { left: margin, right: margin },
+      })
+    }
+
     // Footer on each page
     const pageCount = doc.getNumberOfPages()
     for (let p = 1; p <= pageCount; p++) {
