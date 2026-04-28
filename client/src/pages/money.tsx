@@ -14,6 +14,7 @@ import {
   ReferenceLine,
   Legend,
   Line,
+  LineChart,
 } from 'recharts'
 import {
   DollarSign,
@@ -29,6 +30,12 @@ import {
   X,
   RefreshCw,
   Download,
+  Edit2,
+  Trash2,
+  Save,
+  Lock,
+  GitBranch,
+  Target,
 } from 'lucide-react'
 
 // ─────────────────────────────────────────────
@@ -1914,8 +1921,18 @@ function ExportButton({ entity }: { entity: 'mully' | 'mfs' }) {
   )
 }
 
+type MoneyTab = 'overview' | 'performance' | 'drift' | 'amendments'
+
 export default function MoneyPage() {
   const [entity, setEntity] = useState<'mully' | 'mfs'>('mully')
+  const [tab, setTab] = useState<MoneyTab>('overview')
+
+  const tabs: { id: MoneyTab; label: string; hint: string }[] = [
+    { id: 'overview', label: 'Overview', hint: 'Cash, forecast, weekly variance' },
+    { id: 'performance', label: 'Q2 Performance', hint: 'Quarterly plan vs tracking' },
+    { id: 'drift', label: 'Forecast Drift', hint: 'Vintage projections over time' },
+    { id: 'amendments', label: 'Plan Amendments', hint: 'Known structural changes' },
+  ]
 
   return (
     <div className="max-w-6xl mx-auto px-4 md:px-8 py-6 space-y-6">
@@ -1926,7 +1943,7 @@ export default function MoneyPage() {
             Money
           </h1>
           <p className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>
-            Cash position, forecasts, and CFO assumptions
+            Cash position, forecasts, and CFO variance tracking
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -1935,26 +1952,447 @@ export default function MoneyPage() {
         </div>
       </div>
 
-      {/* S1 — Cash Position */}
-      <CashPositionSection entity={entity} />
+      {/* Tabs */}
+      <div className="flex items-center gap-1 border-b" style={{ borderColor: 'hsl(45 10% 18%)' }}>
+        {tabs.map(t => (
+          <button
+            key={t.id}
+            onClick={() => setTab(t.id)}
+            className="px-3 py-2 text-xs font-medium transition"
+            style={{
+              color: tab === t.id ? 'var(--gold)' : 'var(--text-muted)',
+              borderBottom: `2px solid ${tab === t.id ? 'var(--gold)' : 'transparent'}`,
+              marginBottom: '-1px',
+            }}
+            title={t.hint}
+            data-testid={`tab-${t.id}`}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
 
-      {/* S2 — Expense Breakdown */}
-      <ExpenseBreakdownSection entity={entity} />
+      {tab === 'overview' && (
+        <>
+          <CashPositionSection entity={entity} />
+          <ExpenseBreakdownSection entity={entity} />
+          <CashNotesSection entity={entity} />
+          <ForecastChartSection entity={entity} />
+          <ForecastBreakdownSection entity={entity} />
+          <ForecastVsActualSection entity={entity} />
+          <AssumptionsSection entity={entity} />
+        </>
+      )}
 
-      {/* S3 — Cash Notes / Overrides */}
-      <CashNotesSection entity={entity} />
+      {tab === 'performance' && <QuarterlyPerformanceSection entity={entity} />}
+      {tab === 'drift' && <ForecastDriftSection entity={entity} />}
+      {tab === 'amendments' && <AmendmentsSection entity={entity} />}
+    </div>
+  )
+}
 
-      {/* S3 — 13-Week Forecast Chart */}
-      <ForecastChartSection entity={entity} />
+// ─────────────────────────────────────────────
+// Section: Quarterly Performance (Layer 1)
+// ─────────────────────────────────────────────
 
-      {/* S4 — Forecast Breakdown Table */}
-      <ForecastBreakdownSection entity={entity} />
+function QuarterlyPerformanceSection({ entity }: { entity: 'mully' | 'mfs' }) {
+  const [quarter, _setQuarter] = useState('2026-Q2')
 
-      {/* S5 — Forecast vs Actual */}
-      <ForecastVsActualSection entity={entity} />
+  const { data, isLoading } = useQuery({
+    queryKey: ['quarterly_performance', entity, quarter],
+    queryFn: async () => {
+      const { data } = await supabase
+        .from('v_quarterly_performance')
+        .select('*')
+        .eq('entity', entity)
+        .eq('quarter', quarter)
+        .order('week_start')
+      return data || []
+    },
+    staleTime: 30_000,
+  })
 
-      {/* S6 — CFO Assumptions */}
-      <AssumptionsSection entity={entity} />
+  if (isLoading) return <div className="skeleton rounded-xl h-64" />
+  if (!data || data.length === 0) {
+    return (
+      <div className="rounded-xl p-6 text-center text-sm" style={{ background: 'var(--surface-card)', border: '1px solid hsl(45 10% 20%)', color: 'var(--text-muted)' }}>
+        No quarterly plan locked for {quarter}. The plan auto-locks on the first day of each quarter.
+      </div>
+    )
+  }
+
+  // KPI rollup
+  const totalPlanNet = data.reduce((s, r: any) => s + Number(r.plan_net), 0)
+  const totalAdjPlanNet = data.reduce((s, r: any) => s + Number(r.adjusted_plan_net), 0)
+  const totalTrackingNet = data.reduce((s, r: any) => s + Number(r.tracking_net), 0)
+  const closedRows = data.filter((r: any) => r.status === 'closed')
+  const closedPlanNet = closedRows.reduce((s, r: any) => s + Number(r.adjusted_plan_net), 0)
+  const closedActualNet = closedRows.reduce((s, r: any) => s + Number(r.tracking_net), 0)
+  const closedVariance = closedActualNet - closedPlanNet
+  const totalVariance = totalTrackingNet - totalAdjPlanNet
+  const amendmentTotal = data.reduce((s, r: any) => s + (Number(r.amend_inflow) - Number(r.amend_outflow)), 0)
+
+  return (
+    <div className="space-y-4">
+      {/* KPI Strip */}
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+        <KPICard label={`${quarter} Plan (locked)`} value={fmt(totalPlanNet)} sub="Net cash flow at start" subColor="var(--text-muted)" />
+        <KPICard label="Amendments" value={`${amendmentTotal >= 0 ? '+' : ''}${fmt(amendmentTotal)}`} sub={amendmentTotal === 0 ? 'No structural changes' : 'Known structural changes'} subColor={amendmentTotal === 0 ? 'var(--text-muted)' : 'var(--gold)'} />
+        <KPICard label="Adjusted Plan" value={fmt(totalAdjPlanNet)} sub="Plan + amendments" subColor="var(--text-muted)" />
+        <KPICard label="Tracking (Closed + Live)" value={fmt(totalTrackingNet)} sub={`Variance ${totalVariance >= 0 ? '+' : ''}${fmt(totalVariance)}`} subColor={totalVariance >= 0 ? '#4ade80' : '#ef4444'} />
+      </div>
+
+      {/* Detail row */}
+      <div className="rounded-xl p-5" style={{ background: 'var(--surface-card)', border: '1px solid hsl(45 10% 20%)' }}>
+        <div className="flex items-center gap-2 mb-3">
+          <Target size={15} style={{ color: 'var(--gold)' }} />
+          <h2 className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>{quarter} Performance vs Plan</h2>
+          <span className="text-xs" style={{ color: 'var(--text-muted)' }}>· Plan locked at quarter start; closed weeks use actuals; future weeks use live forecast</span>
+        </div>
+        <div className="text-xs mb-3 px-3 py-2 rounded" style={{ background: 'rgba(201,168,76,0.05)', color: 'var(--text-muted)' }}>
+          <strong style={{ color: 'var(--text-primary)' }}>Closed weeks:</strong> Plan {fmt(closedPlanNet)} · Actual {fmt(closedActualNet)} · Variance <span style={{ color: closedVariance >= 0 ? '#4ade80' : '#ef4444', fontWeight: 600 }}>{closedVariance >= 0 ? '+' : ''}{fmt(closedVariance)}</span>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead>
+              <tr style={{ background: 'hsl(45 10% 13%)' }}>
+                <th className="px-3 py-2 text-left" style={{ color: 'var(--text-muted)', borderBottom: '1px solid hsl(45 10% 18%)' }}>Week</th>
+                <th className="px-3 py-2 text-center" style={{ color: 'var(--text-muted)', borderBottom: '1px solid hsl(45 10% 18%)' }}>Status</th>
+                <th className="px-3 py-2 text-right" style={{ color: 'var(--text-muted)', borderBottom: '1px solid hsl(45 10% 18%)' }}>Plan Net</th>
+                <th className="px-3 py-2 text-right" style={{ color: 'var(--gold)', borderBottom: '1px solid hsl(45 10% 18%)' }}>Amendments</th>
+                <th className="px-3 py-2 text-right" style={{ color: 'var(--text-primary)', borderBottom: '1px solid hsl(45 10% 18%)' }}>Adjusted Plan</th>
+                <th className="px-3 py-2 text-right" style={{ color: 'var(--text-primary)', borderBottom: '1px solid hsl(45 10% 18%)' }}>Tracking</th>
+                <th className="px-3 py-2 text-right" style={{ color: 'var(--gold)', borderBottom: '1px solid hsl(45 10% 18%)' }}>Variance</th>
+                <th className="px-3 py-2 text-left" style={{ color: 'var(--text-muted)', borderBottom: '1px solid hsl(45 10% 18%)' }}>Amendment Notes</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.map((r: any, i: number) => {
+                const d = new Date(r.week_start + 'T00:00:00')
+                const wkLabel = `${d.getMonth() + 1}/${d.getDate()}`
+                const variance = Number(r.tracking_net) - Number(r.adjusted_plan_net)
+                const amendNet = Number(r.amend_inflow) - Number(r.amend_outflow)
+                const statusColor = r.status === 'closed' ? '#4ade80' : r.status === 'in_progress' ? '#fbbf24' : '#9ca3af'
+                const statusLabel = r.status === 'closed' ? 'Closed' : r.status === 'in_progress' ? 'In progress' : 'Future'
+                const amendments = (r.amendments || []) as any[]
+                return (
+                  <tr key={r.week_start} style={{ background: i % 2 === 0 ? 'var(--surface-card)' : 'hsl(45 10% 14%)' }}>
+                    <td className="px-3 py-2.5 font-medium" style={{ color: 'var(--text-primary)', borderBottom: '1px solid hsl(45 10% 16%)' }}>{wkLabel}</td>
+                    <td className="px-3 py-2.5 text-center" style={{ borderBottom: '1px solid hsl(45 10% 16%)' }}>
+                      <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: 'hsl(45 10% 18%)', color: statusColor }}>{statusLabel}</span>
+                    </td>
+                    <td className="px-3 py-2.5 text-right tabular-nums" style={{ color: 'var(--text-muted)', borderBottom: '1px solid hsl(45 10% 16%)' }}>{fmt(Number(r.plan_net))}</td>
+                    <td className="px-3 py-2.5 text-right tabular-nums" style={{ color: amendNet === 0 ? 'var(--text-muted)' : amendNet > 0 ? '#4ade80' : '#ef4444', borderBottom: '1px solid hsl(45 10% 16%)' }}>{amendNet === 0 ? '—' : `${amendNet >= 0 ? '+' : ''}${fmt(amendNet)}`}</td>
+                    <td className="px-3 py-2.5 text-right tabular-nums font-medium" style={{ color: 'var(--text-primary)', borderBottom: '1px solid hsl(45 10% 16%)' }}>{fmt(Number(r.adjusted_plan_net))}</td>
+                    <td className="px-3 py-2.5 text-right tabular-nums font-semibold" style={{ color: Number(r.tracking_net) >= 0 ? '#4ade80' : '#ef4444', borderBottom: '1px solid hsl(45 10% 16%)' }}>{fmt(Number(r.tracking_net))}</td>
+                    <td className="px-3 py-2.5 text-right tabular-nums font-semibold" style={{ color: variance >= 0 ? '#4ade80' : '#ef4444', borderBottom: '1px solid hsl(45 10% 16%)' }}>{r.status === 'future' ? '—' : `${variance >= 0 ? '+' : ''}${fmt(variance)}`}</td>
+                    <td className="px-3 py-2.5 text-xs" style={{ color: 'var(--text-muted)', borderBottom: '1px solid hsl(45 10% 16%)' }}>
+                      {amendments.length > 0 ? amendments.map(a => `${a.category} ${a.direction === 'inflow' ? '+' : '-'}${fmt(a.delta)}`).join(', ') : '—'}
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function KPICard({ label, value, sub, subColor }: { label: string; value: string; sub: string; subColor: string }) {
+  return (
+    <div className="rounded-xl p-4" style={{ background: 'var(--surface-card)', border: '1px solid hsl(45 10% 20%)' }}>
+      <div className="text-[11px]" style={{ color: 'var(--text-muted)' }}>{label}</div>
+      <div className="text-xl font-semibold mt-1 tabular-nums" style={{ color: 'var(--text-primary)' }}>{value}</div>
+      <div className="text-[11px] mt-1" style={{ color: subColor }}>{sub}</div>
+    </div>
+  )
+}
+
+// ─────────────────────────────────────────────
+// Section: Forecast Drift (Layer 4)
+// ─────────────────────────────────────────────
+
+function ForecastDriftSection({ entity }: { entity: 'mully' | 'mfs' }) {
+  const { data, isLoading } = useQuery({
+    queryKey: ['forecast_drift', entity],
+    queryFn: async () => {
+      const { data } = await supabase
+        .from('v_forecast_drift_by_vintage')
+        .select('*')
+        .eq('entity', entity)
+        .gte('forecast_week', new Date().toISOString().slice(0, 10))
+        .order('forecast_week')
+        .order('vintage_date')
+      return data || []
+    },
+    staleTime: 30_000,
+  })
+
+  // Build chart: each forecast_week is a series, x-axis = vintage_date
+  const chartData = useMemo(() => {
+    if (!data) return { series: [], byVintage: [] }
+    const byWeek: Record<string, any[]> = {}
+    const allVintages = new Set<string>()
+    for (const r of data) {
+      if (!byWeek[r.forecast_week]) byWeek[r.forecast_week] = []
+      byWeek[r.forecast_week].push(r)
+      allVintages.add(r.vintage_date)
+    }
+    const vintages = Array.from(allVintages).sort()
+    // Pivot: row per vintage, column per forecast_week
+    const byVintage = vintages.map(v => {
+      const row: any = { vintage: v.slice(5) }
+      for (const wk of Object.keys(byWeek)) {
+        const match = byWeek[wk].find((r: any) => r.vintage_date === v)
+        if (match) row[wk] = Number(match.predicted_net)
+      }
+      return row
+    })
+    return { series: Object.keys(byWeek).slice(0, 6), byVintage }
+  }, [data])
+
+  if (isLoading) return <div className="skeleton rounded-xl h-64" />
+  if (!data || data.length === 0) {
+    return (
+      <div className="rounded-xl p-6 text-center text-sm" style={{ background: 'var(--surface-card)', border: '1px solid hsl(45 10% 20%)', color: 'var(--text-muted)' }}>
+        No forecast snapshots yet for future weeks. Drift will populate as snapshots accumulate.
+      </div>
+    )
+  }
+
+  // Compute drift summary per future week
+  const driftSummary = chartData.series.map(wk => {
+    const vintages = data.filter((r: any) => r.forecast_week === wk).sort((a: any, b: any) => a.vintage_date.localeCompare(b.vintage_date))
+    if (vintages.length < 2) return { week: wk, vintages: vintages.length, first: 0, latest: 0, drift: 0 }
+    const first = Number(vintages[0].predicted_net)
+    const latest = Number(vintages[vintages.length - 1].predicted_net)
+    return { week: wk, vintages: vintages.length, first, latest, drift: latest - first }
+  })
+
+  const colors = ['#C9A84C', '#4ade80', '#60a5fa', '#a78bfa', '#fb923c', '#f87171']
+
+  return (
+    <div className="space-y-4">
+      {/* Chart */}
+      <div className="rounded-xl p-5" style={{ background: 'var(--surface-card)', border: '1px solid hsl(45 10% 20%)' }}>
+        <div className="flex items-center gap-2 mb-3">
+          <GitBranch size={15} style={{ color: 'var(--gold)' }} />
+          <h2 className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>Forecast Drift</h2>
+          <span className="text-xs" style={{ color: 'var(--text-muted)' }}>· Each line = a future week. X-axis = vintage date. Flat line = stable forecast.</span>
+        </div>
+        <div style={{ height: 280 }}>
+          <ResponsiveContainer width="100%" height="100%">
+            <LineChart data={chartData.byVintage} margin={{ top: 10, right: 30, left: 10, bottom: 5 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="hsl(45 10% 18%)" />
+              <XAxis dataKey="vintage" tick={{ fill: '#8a8778', fontSize: 10 }} axisLine={{ stroke: 'hsl(45 10% 20%)' }} />
+              <YAxis tick={{ fill: '#8a8778', fontSize: 10 }} axisLine={false} tickFormatter={(v) => fmtShort(v)} width={56} />
+              <Tooltip contentStyle={{ background: '#1e1c19', border: '1px solid hsl(45 10% 20%)', fontSize: 11 }} formatter={(v: any) => fmt(Number(v))} />
+              <Legend wrapperStyle={{ fontSize: 10 }} />
+              {chartData.series.map((wk, idx) => (
+                <Line key={wk} type="monotone" dataKey={wk} name={`Wk of ${wk.slice(5)}`} stroke={colors[idx % colors.length]} strokeWidth={2} dot={{ r: 3 }} />
+              ))}
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+
+      {/* Drift table */}
+      <div className="rounded-xl p-5" style={{ background: 'var(--surface-card)', border: '1px solid hsl(45 10% 20%)' }}>
+        <h3 className="text-sm font-medium mb-3" style={{ color: 'var(--text-primary)' }}>Drift Summary</h3>
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead>
+              <tr style={{ background: 'hsl(45 10% 13%)' }}>
+                <th className="px-3 py-2 text-left" style={{ color: 'var(--text-muted)', borderBottom: '1px solid hsl(45 10% 18%)' }}>Forecast Week</th>
+                <th className="px-3 py-2 text-right" style={{ color: 'var(--text-muted)', borderBottom: '1px solid hsl(45 10% 18%)' }}># Vintages</th>
+                <th className="px-3 py-2 text-right" style={{ color: 'var(--text-muted)', borderBottom: '1px solid hsl(45 10% 18%)' }}>First Forecast (Net)</th>
+                <th className="px-3 py-2 text-right" style={{ color: 'var(--text-primary)', borderBottom: '1px solid hsl(45 10% 18%)' }}>Latest Forecast (Net)</th>
+                <th className="px-3 py-2 text-right" style={{ color: 'var(--gold)', borderBottom: '1px solid hsl(45 10% 18%)' }}>Total Drift</th>
+              </tr>
+            </thead>
+            <tbody>
+              {driftSummary.map((s, i) => (
+                <tr key={s.week} style={{ background: i % 2 === 0 ? 'var(--surface-card)' : 'hsl(45 10% 14%)' }}>
+                  <td className="px-3 py-2.5 font-medium" style={{ color: 'var(--text-primary)', borderBottom: '1px solid hsl(45 10% 16%)' }}>{s.week.slice(5)}</td>
+                  <td className="px-3 py-2.5 text-right tabular-nums" style={{ color: 'var(--text-muted)', borderBottom: '1px solid hsl(45 10% 16%)' }}>{s.vintages}</td>
+                  <td className="px-3 py-2.5 text-right tabular-nums" style={{ color: 'var(--text-muted)', borderBottom: '1px solid hsl(45 10% 16%)' }}>{fmt(s.first)}</td>
+                  <td className="px-3 py-2.5 text-right tabular-nums font-medium" style={{ color: 'var(--text-primary)', borderBottom: '1px solid hsl(45 10% 16%)' }}>{fmt(s.latest)}</td>
+                  <td className="px-3 py-2.5 text-right tabular-nums font-semibold" style={{ color: s.drift === 0 ? 'var(--text-muted)' : s.drift > 0 ? '#4ade80' : '#ef4444', borderBottom: '1px solid hsl(45 10% 16%)' }}>{s.drift === 0 ? '—' : `${s.drift >= 0 ? '+' : ''}${fmt(s.drift)}`}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ─────────────────────────────────────────────
+// Section: Plan Amendments (Layer 5 helper)
+// ─────────────────────────────────────────────
+
+function AmendmentsSection({ entity }: { entity: 'mully' | 'mfs' }) {
+  const qc = useQueryClient()
+  const [adding, setAdding] = useState(false)
+  const [draft, setDraft] = useState({
+    quarter: '2026-Q2', effective_date: new Date().toISOString().slice(0, 10),
+    end_date: '', category: '', flow_direction: 'outflow' as 'inflow' | 'outflow',
+    weekly_delta: 0, monthly_delta: 0, reason: '',
+  })
+
+  const { data: amendments, isLoading } = useQuery({
+    queryKey: ['plan_amendments', entity],
+    queryFn: async () => {
+      const { data } = await supabase
+        .from('plan_amendments')
+        .select('*')
+        .eq('entity', entity)
+        .eq('active', true)
+        .order('effective_date', { ascending: false })
+      return data || []
+    },
+    staleTime: 30_000,
+  })
+
+  const handleAdd = async () => {
+    if (!draft.category || draft.weekly_delta === 0) return
+    await supabase.from('plan_amendments').insert({
+      entity,
+      quarter: draft.quarter,
+      effective_date: draft.effective_date,
+      end_date: draft.end_date || null,
+      category: draft.category,
+      flow_direction: draft.flow_direction,
+      weekly_delta: draft.weekly_delta,
+      monthly_delta: draft.monthly_delta || null,
+      reason: draft.reason,
+      created_by: 'drew',
+    })
+    qc.invalidateQueries({ queryKey: ['plan_amendments', entity] })
+    qc.invalidateQueries({ queryKey: ['quarterly_performance', entity] })
+    setAdding(false)
+    setDraft({ ...draft, category: '', weekly_delta: 0, monthly_delta: 0, reason: '' })
+  }
+
+  const handleDelete = async (id: number) => {
+    await supabase.from('plan_amendments').update({ active: false }).eq('id', id)
+    qc.invalidateQueries({ queryKey: ['plan_amendments', entity] })
+    qc.invalidateQueries({ queryKey: ['quarterly_performance', entity] })
+  }
+
+  if (isLoading) return <div className="skeleton rounded-xl h-64" />
+
+  return (
+    <div className="space-y-4">
+      <div className="rounded-xl p-5" style={{ background: 'var(--surface-card)', border: '1px solid hsl(45 10% 20%)' }}>
+        <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+          <div className="flex items-center gap-2">
+            <Edit2 size={15} style={{ color: 'var(--gold)' }} />
+            <h2 className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>Plan Amendments</h2>
+            <span className="text-xs" style={{ color: 'var(--text-muted)' }}>· Known structural changes that adjust the quarterly plan baseline</span>
+          </div>
+          <button
+            onClick={() => setAdding(!adding)}
+            className="text-[11px] px-2.5 py-1 rounded-md flex items-center gap-1"
+            style={{ background: 'rgba(201,168,76,0.1)', color: 'var(--gold)', border: '1px solid rgba(201,168,76,0.2)' }}
+          >
+            <Plus size={12} /> Add Amendment
+          </button>
+        </div>
+
+        {adding && (
+          <div className="rounded-lg p-4 mb-4 grid grid-cols-1 md:grid-cols-3 gap-3 text-xs" style={{ background: 'hsl(45 10% 13%)', border: '1px solid hsl(45 10% 20%)' }}>
+            <label className="flex flex-col gap-1">
+              <span style={{ color: 'var(--text-muted)' }}>Effective Date</span>
+              <input type="date" value={draft.effective_date} onChange={e => setDraft({ ...draft, effective_date: e.target.value })} className="px-2 py-1.5 rounded" style={{ background: 'var(--surface-card)', border: '1px solid hsl(45 10% 20%)', color: 'var(--text-primary)' }} />
+            </label>
+            <label className="flex flex-col gap-1">
+              <span style={{ color: 'var(--text-muted)' }}>End Date (optional)</span>
+              <input type="date" value={draft.end_date} onChange={e => setDraft({ ...draft, end_date: e.target.value })} className="px-2 py-1.5 rounded" style={{ background: 'var(--surface-card)', border: '1px solid hsl(45 10% 20%)', color: 'var(--text-primary)' }} />
+            </label>
+            <label className="flex flex-col gap-1">
+              <span style={{ color: 'var(--text-muted)' }}>Category</span>
+              <input type="text" placeholder="e.g. rent, payroll, debt_service" value={draft.category} onChange={e => setDraft({ ...draft, category: e.target.value })} className="px-2 py-1.5 rounded" style={{ background: 'var(--surface-card)', border: '1px solid hsl(45 10% 20%)', color: 'var(--text-primary)' }} />
+            </label>
+            <label className="flex flex-col gap-1">
+              <span style={{ color: 'var(--text-muted)' }}>Direction</span>
+              <select value={draft.flow_direction} onChange={e => setDraft({ ...draft, flow_direction: e.target.value as 'inflow' | 'outflow' })} className="px-2 py-1.5 rounded" style={{ background: 'var(--surface-card)', border: '1px solid hsl(45 10% 20%)', color: 'var(--text-primary)' }}>
+                <option value="outflow">Outflow (cost)</option>
+                <option value="inflow">Inflow (revenue)</option>
+              </select>
+            </label>
+            <label className="flex flex-col gap-1">
+              <span style={{ color: 'var(--text-muted)' }}>Weekly Delta ($)</span>
+              <input type="number" step="1" value={draft.weekly_delta} onChange={e => setDraft({ ...draft, weekly_delta: Number(e.target.value) })} className="px-2 py-1.5 rounded" style={{ background: 'var(--surface-card)', border: '1px solid hsl(45 10% 20%)', color: 'var(--text-primary)' }} />
+              <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>For monthly costs, divide by 4.33</span>
+            </label>
+            <label className="flex flex-col gap-1">
+              <span style={{ color: 'var(--text-muted)' }}>Monthly Delta ($, optional)</span>
+              <input type="number" step="1" value={draft.monthly_delta} onChange={e => setDraft({ ...draft, monthly_delta: Number(e.target.value) })} className="px-2 py-1.5 rounded" style={{ background: 'var(--surface-card)', border: '1px solid hsl(45 10% 20%)', color: 'var(--text-primary)' }} />
+            </label>
+            <label className="flex flex-col gap-1 md:col-span-3">
+              <span style={{ color: 'var(--text-muted)' }}>Reason</span>
+              <input type="text" placeholder="e.g. New office lease starting June 1" value={draft.reason} onChange={e => setDraft({ ...draft, reason: e.target.value })} className="px-2 py-1.5 rounded" style={{ background: 'var(--surface-card)', border: '1px solid hsl(45 10% 20%)', color: 'var(--text-primary)' }} />
+            </label>
+            <div className="flex gap-2 md:col-span-3">
+              <button onClick={handleAdd} className="px-3 py-1.5 rounded text-xs flex items-center gap-1" style={{ background: 'var(--gold)', color: '#1a1a1a' }}>
+                <Save size={12} /> Save Amendment
+              </button>
+              <button onClick={() => setAdding(false)} className="px-3 py-1.5 rounded text-xs" style={{ background: 'transparent', color: 'var(--text-muted)', border: '1px solid hsl(45 10% 20%)' }}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
+
+        {amendments && amendments.length === 0 && !adding && (
+          <div className="text-xs text-center py-8" style={{ color: 'var(--text-muted)' }}>
+            No amendments yet. Add a row to log a known structural change (rent increase, new hire, cancelled contract, etc.). The amendment will adjust the quarterly plan baseline so it doesn't show as variance.
+          </div>
+        )}
+
+        {amendments && amendments.length > 0 && (
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr style={{ background: 'hsl(45 10% 13%)' }}>
+                  <th className="px-3 py-2 text-left" style={{ color: 'var(--text-muted)', borderBottom: '1px solid hsl(45 10% 18%)' }}>Effective</th>
+                  <th className="px-3 py-2 text-left" style={{ color: 'var(--text-muted)', borderBottom: '1px solid hsl(45 10% 18%)' }}>End</th>
+                  <th className="px-3 py-2 text-left" style={{ color: 'var(--text-muted)', borderBottom: '1px solid hsl(45 10% 18%)' }}>Category</th>
+                  <th className="px-3 py-2 text-center" style={{ color: 'var(--text-muted)', borderBottom: '1px solid hsl(45 10% 18%)' }}>Direction</th>
+                  <th className="px-3 py-2 text-right" style={{ color: 'var(--text-muted)', borderBottom: '1px solid hsl(45 10% 18%)' }}>Weekly Δ</th>
+                  <th className="px-3 py-2 text-right" style={{ color: 'var(--text-muted)', borderBottom: '1px solid hsl(45 10% 18%)' }}>Monthly Δ</th>
+                  <th className="px-3 py-2 text-left" style={{ color: 'var(--text-muted)', borderBottom: '1px solid hsl(45 10% 18%)' }}>Reason</th>
+                  <th className="px-3 py-2 text-right" style={{ color: 'var(--text-muted)', borderBottom: '1px solid hsl(45 10% 18%)' }}></th>
+                </tr>
+              </thead>
+              <tbody>
+                {amendments.map((a: any, i: number) => (
+                  <tr key={a.id} style={{ background: i % 2 === 0 ? 'var(--surface-card)' : 'hsl(45 10% 14%)' }}>
+                    <td className="px-3 py-2.5" style={{ color: 'var(--text-primary)', borderBottom: '1px solid hsl(45 10% 16%)' }}>{a.effective_date}</td>
+                    <td className="px-3 py-2.5" style={{ color: 'var(--text-muted)', borderBottom: '1px solid hsl(45 10% 16%)' }}>{a.end_date || '—'}</td>
+                    <td className="px-3 py-2.5 font-medium" style={{ color: 'var(--text-primary)', borderBottom: '1px solid hsl(45 10% 16%)' }}>{a.category}</td>
+                    <td className="px-3 py-2.5 text-center" style={{ borderBottom: '1px solid hsl(45 10% 16%)' }}>
+                      <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: 'hsl(45 10% 18%)', color: a.flow_direction === 'inflow' ? '#4ade80' : '#fbbf24' }}>{a.flow_direction}</span>
+                    </td>
+                    <td className="px-3 py-2.5 text-right tabular-nums" style={{ color: a.flow_direction === 'inflow' ? '#4ade80' : '#ef4444', borderBottom: '1px solid hsl(45 10% 16%)' }}>{Number(a.weekly_delta) >= 0 ? '+' : ''}{fmt(Number(a.weekly_delta))}</td>
+                    <td className="px-3 py-2.5 text-right tabular-nums" style={{ color: 'var(--text-muted)', borderBottom: '1px solid hsl(45 10% 16%)' }}>{a.monthly_delta ? fmt(Number(a.monthly_delta)) : '—'}</td>
+                    <td className="px-3 py-2.5 text-xs" style={{ color: 'var(--text-muted)', borderBottom: '1px solid hsl(45 10% 16%)' }}>{a.reason || '—'}</td>
+                    <td className="px-3 py-2.5 text-right" style={{ borderBottom: '1px solid hsl(45 10% 16%)' }}>
+                      <button onClick={() => handleDelete(a.id)} className="p-1 rounded" style={{ color: 'var(--text-muted)' }} title="Deactivate">
+                        <Trash2 size={12} />
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
     </div>
   )
 }
