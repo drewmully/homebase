@@ -1856,24 +1856,27 @@ function ExportButton({ entity }: { entity: 'mully' | 'mfs' }) {
               else if (row.status === 'in_progress') { data.cell.styles.textColor = [202, 138, 4]; data.cell.styles.fontStyle = 'bold' }
               else { data.cell.styles.textColor = [120, 115, 105] }
             }
+            // Helper: detect sign from formatter output ('+$X', '-$X' or '$-X', '—', '-')
+            const isPos = (t: string) => t.startsWith('+')
+            const isNeg = (t: string) => t.includes('-') && !isPos(t) && t !== '—' && t !== '-'
             // Color variance columns: inflow/net (positive=green, negative=red)
             if ([4, 10].includes(data.column.index)) {
               const txt = String(data.cell.raw)
-              if (txt.startsWith('+')) data.cell.styles.textColor = [22, 163, 74]
-              else if (txt.startsWith('-$')) data.cell.styles.textColor = [200, 50, 50]
+              if (isPos(txt)) data.cell.styles.textColor = [22, 163, 74]
+              else if (isNeg(txt)) data.cell.styles.textColor = [200, 50, 50]
               if (data.column.index === 10) data.cell.styles.fontStyle = 'bold'
             }
             // Outflow variance: positive=red (overspent), negative=green (saved)
             if (data.column.index === 7) {
               const txt = String(data.cell.raw)
-              if (txt.startsWith('+')) data.cell.styles.textColor = [200, 50, 50]
-              else if (txt.startsWith('-$')) data.cell.styles.textColor = [22, 163, 74]
+              if (isPos(txt)) data.cell.styles.textColor = [200, 50, 50]
+              else if (isNeg(txt)) data.cell.styles.textColor = [22, 163, 74]
             }
             // Color actual net (col 9)
             if (data.column.index === 9) {
               const txt = String(data.cell.raw)
-              if (txt.startsWith('+')) data.cell.styles.textColor = [22, 163, 74]
-              else if (txt.startsWith('-$')) data.cell.styles.textColor = [200, 50, 50]
+              if (isPos(txt)) data.cell.styles.textColor = [22, 163, 74]
+              else if (isNeg(txt)) data.cell.styles.textColor = [200, 50, 50]
               data.cell.styles.fontStyle = 'bold'
             }
             // Plan net col 8: lighter
