@@ -20,6 +20,7 @@ import SubscribersPage from "@/pages/subscribers";
 import APPage from "@/pages/ap";
 import CroPage from "@/pages/cro";
 import CampaignsPage from "@/pages/campaigns";
+import TicketsPage from "@/pages/tickets";
 import NotFound from "@/pages/not-found";
 
 function LoadingScreen() {
@@ -55,6 +56,7 @@ function AuthGate() {
         <Route path="/ap" component={APPage} />
         <Route path="/cro" component={CroPage} />
         <Route path="/campaigns" component={CampaignsPage} />
+        <Route path="/tickets" component={TicketsPage} />
         <Route component={NotFound} />
       </Switch>
     </AppLayout>

@@ -3,7 +3,7 @@ import { useAuth } from '@/lib/auth'
 import { useState } from 'react'
 import {
   Activity, Mountain, AlertTriangle, TrendingUp, DollarSign,
-  LayoutGrid, LogOut, Menu, X, FlaskConical
+  LayoutGrid, LogOut, Menu, X, FlaskConical, Ticket
 } from 'lucide-react'
 
 const NAV_ITEMS = [
@@ -12,6 +12,7 @@ const NAV_ITEMS = [
   { path: '/issues', label: 'Issues', icon: AlertTriangle },
   { path: '/pipeline', label: 'Pipeline', icon: TrendingUp },
   { path: '/money', label: 'Money', icon: DollarSign },
+  { path: '/tickets', label: 'Tickets', icon: Ticket },
   { path: '/apps', label: 'Apps', icon: LayoutGrid },
   { path: '/cro', label: 'CRO', icon: FlaskConical },
 ]
