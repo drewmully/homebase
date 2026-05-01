@@ -1,7 +1,7 @@
 import { useState, useMemo } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { supabase } from '@/lib/supabase'
-import { AlertCircle, CheckCircle2, Clock, ExternalLink, MessageSquare, Search, X, User } from 'lucide-react'
+import { AlertCircle, CheckCircle2, Clock, ExternalLink, Image as ImageIcon, MessageSquare, Search, Sparkles, X, User } from 'lucide-react'
 
 // ─────────────────────────────────────────────
 // Types
@@ -21,6 +21,10 @@ type Ticket = {
   assignee: string
   status: string
   resolution_note: string | null
+  has_image: boolean
+  image_urls: string[] | null
+  ai_triaged_at: string | null
+  ai_triage_notes: string | null
   created_at: string
   updated_at: string
   resolved_at: string | null
@@ -228,6 +232,16 @@ export default function TicketsPage() {
                     <span className="text-xs font-medium" style={{ color: 'var(--text-primary)' }}>#{t.id}</span>
                     <DomainChip domain={t.domain} />
                     <StatusChip status={t.status} />
+                    {t.has_image && (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded shrink-0 flex items-center gap-1" style={{ background: 'hsl(45 10% 18%)', color: '#a78bfa' }} title="Has Slack screenshot attachment">
+                        <ImageIcon size={9} /> Screenshot
+                      </span>
+                    )}
+                    {t.ai_triaged_at && (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded shrink-0 flex items-center gap-1" style={{ background: 'hsl(45 10% 18%)', color: 'var(--gold)' }} title="AI triaged">
+                        <Sparkles size={9} /> AI
+                      </span>
+                    )}
                     <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
                       {timeAgo(t.created_at)} · by {t.reporter_name}
                     </span>
@@ -369,20 +383,44 @@ function TicketDetailModal({ ticket, onClose, onUpdate }: { ticket: Ticket; onCl
 
           {/* Original raw text */}
           <div className="rounded-lg p-3 text-xs whitespace-pre-wrap" style={{ background: 'hsl(45 10% 13%)', color: 'var(--text-primary)' }}>
-            {ticket.raw_text}
+            {ticket.raw_text || '(no text)'}
           </div>
+          {ticket.has_image && (
+            <div className="flex items-center gap-2 text-xs px-3 py-2 rounded" style={{ background: 'rgba(167,139,250,0.06)', border: '1px solid rgba(167,139,250,0.2)' }}>
+              <ImageIcon size={13} style={{ color: '#a78bfa' }} />
+              <span style={{ color: 'var(--text-muted)' }}>
+                Screenshot attached in Slack
+                {ticket.image_urls && ticket.image_urls.length > 0 && (
+                  <span style={{ color: 'var(--text-primary)' }}> · {ticket.image_urls.join(', ')}</span>
+                )}
+              </span>
+              {ticket.source_url && (
+                <a href={ticket.source_url} target="_blank" rel="noreferrer" className="ml-auto text-[11px] flex items-center gap-1" style={{ color: '#a78bfa' }}>
+                  Open in Slack <ExternalLink size={11} />
+                </a>
+              )}
+            </div>
+          )}
 
           {/* AI-generated summary + fix */}
           {ticket.summary && (
             <div className="space-y-2">
               <div>
-                <div className="text-[11px] uppercase tracking-wider mb-1" style={{ color: 'var(--text-muted)' }}>AI Summary</div>
+                <div className="text-[11px] uppercase tracking-wider mb-1 flex items-center gap-1" style={{ color: 'var(--text-muted)' }}>
+                  {ticket.ai_triaged_at && <Sparkles size={11} style={{ color: 'var(--gold)' }} />} AI Summary
+                </div>
                 <div className="text-xs" style={{ color: 'var(--text-primary)' }}>{ticket.summary}</div>
               </div>
               {ticket.proposed_fix && (
                 <div>
                   <div className="text-[11px] uppercase tracking-wider mb-1" style={{ color: 'var(--text-muted)' }}>Proposed Fix</div>
                   <div className="text-xs" style={{ color: 'var(--text-primary)' }}>{ticket.proposed_fix}</div>
+                </div>
+              )}
+              {ticket.ai_triage_notes && (
+                <div>
+                  <div className="text-[11px] uppercase tracking-wider mb-1" style={{ color: 'var(--text-muted)' }}>AI Notes</div>
+                  <div className="text-[11px] italic" style={{ color: 'var(--text-muted)' }}>{ticket.ai_triage_notes}</div>
                 </div>
               )}
             </div>
