@@ -23,6 +23,7 @@ type Ticket = {
   resolution_note: string | null
   has_image: boolean
   image_urls: string[] | null
+  image_descriptions: string[] | null
   ai_triaged_at: string | null
   ai_triage_notes: string | null
   created_at: string
@@ -386,18 +387,26 @@ function TicketDetailModal({ ticket, onClose, onUpdate }: { ticket: Ticket; onCl
             {ticket.raw_text || '(no text)'}
           </div>
           {ticket.has_image && (
-            <div className="flex items-center gap-2 text-xs px-3 py-2 rounded" style={{ background: 'rgba(167,139,250,0.06)', border: '1px solid rgba(167,139,250,0.2)' }}>
-              <ImageIcon size={13} style={{ color: '#a78bfa' }} />
-              <span style={{ color: 'var(--text-muted)' }}>
-                Screenshot attached in Slack
-                {ticket.image_urls && ticket.image_urls.length > 0 && (
-                  <span style={{ color: 'var(--text-primary)' }}> · {ticket.image_urls.join(', ')}</span>
+            <div className="rounded" style={{ background: 'rgba(167,139,250,0.06)', border: '1px solid rgba(167,139,250,0.2)' }}>
+              <div className="flex items-center gap-2 text-xs px-3 py-2">
+                <ImageIcon size={13} style={{ color: '#a78bfa' }} />
+                <span style={{ color: 'var(--text-primary)', fontWeight: 500 }}>
+                  Screenshot{(ticket.image_urls?.length ?? 0) > 1 ? 's' : ''} attached
+                </span>
+                {ticket.source_url && (
+                  <a href={ticket.source_url} target="_blank" rel="noreferrer" className="ml-auto text-[11px] flex items-center gap-1" style={{ color: '#a78bfa' }}>
+                    Open in Slack <ExternalLink size={11} />
+                  </a>
                 )}
-              </span>
-              {ticket.source_url && (
-                <a href={ticket.source_url} target="_blank" rel="noreferrer" className="ml-auto text-[11px] flex items-center gap-1" style={{ color: '#a78bfa' }}>
-                  Open in Slack <ExternalLink size={11} />
-                </a>
+              </div>
+              {ticket.image_descriptions && ticket.image_descriptions.length > 0 && (
+                <div className="px-3 pb-3 space-y-1">
+                  {ticket.image_descriptions.map((desc, i) => (
+                    <div key={i} className="text-[11px] italic" style={{ color: 'var(--text-muted)', borderLeft: '2px solid rgba(167,139,250,0.4)', paddingLeft: 8 }}>
+                      {desc}
+                    </div>
+                  ))}
+                </div>
               )}
             </div>
           )}
