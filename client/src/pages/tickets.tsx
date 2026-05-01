@@ -78,7 +78,7 @@ const STATUS_LABEL: Record<string, string> = {
   in_progress: 'In Progress',
   blocked: 'Blocked',
   resolved: 'Resolved',
-  wontfix: 'Won\u2019t Fix',
+  wontfix: 'Won't Fix',
 }
 
 // ─────────────────────────────────────────────
@@ -150,7 +150,7 @@ export default function TicketsPage() {
         <div>
           <h1 className="text-lg font-semibold" style={{ color: 'var(--text-primary)' }}>Tickets</h1>
           <p className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>
-            Slack-fed dev queue \u2014 hourly ingest from #mully-os, AI-triaged, domain-routed
+            Slack-fed dev queue — hourly ingest from #mully-os, AI-triaged, domain-routed
           </p>
         </div>
       </div>
@@ -178,7 +178,7 @@ export default function TicketsPage() {
                 </span>
               </div>
               <div className="text-2xl font-semibold tabular-nums" style={{ color: 'var(--text-primary)' }}>{c.open}</div>
-              <div className="text-[11px] mt-0.5" style={{ color: 'var(--text-muted)' }}>open \u00b7 {c.total} total</div>
+              <div className="text-[11px] mt-0.5" style={{ color: 'var(--text-muted)' }}>open · {c.total} total</div>
             </button>
           )
         })}
@@ -229,11 +229,11 @@ export default function TicketsPage() {
                     <DomainChip domain={t.domain} />
                     <StatusChip status={t.status} />
                     <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
-                      {timeAgo(t.created_at)} \u00b7 by {t.reporter_name}
+                      {timeAgo(t.created_at)} · by {t.reporter_name}
                     </span>
                   </div>
                   <div className="text-xs mb-1" style={{ color: 'var(--text-primary)' }}>{t.title}</div>
-                  {t.summary && <div className="text-[11px]" style={{ color: 'var(--text-muted)' }}>{t.summary.slice(0, 140)}{t.summary.length > 140 ? '\u2026' : ''}</div>}
+                  {t.summary && <div className="text-[11px]" style={{ color: 'var(--text-muted)' }}>{t.summary.slice(0, 140)}{t.summary.length > 140 ? '…' : ''}</div>}
                 </div>
                 <div className="flex items-center gap-1.5">
                   <User size={11} style={{ color: 'var(--text-muted)' }} />
@@ -257,14 +257,14 @@ export default function TicketsPage() {
                   <span style={{ color: 'var(--text-muted)' }}>{actionLabel(c.action)}</span>
                   {c.from_value && c.to_value && (
                     <span style={{ color: 'var(--text-muted)' }}>
-                      {c.from_value} \u2192 <strong style={{ color: 'var(--text-primary)' }}>{c.to_value}</strong>
+                      {c.from_value} → <strong style={{ color: 'var(--text-primary)' }}>{c.to_value}</strong>
                     </span>
                   )}
                   {!c.from_value && c.to_value && c.action === 'created' && (
                     <span style={{ color: 'var(--text-muted)' }}>as <strong style={{ color: 'var(--text-primary)' }}>{c.to_value}</strong></span>
                   )}
                 </div>
-                <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{timeAgo(c.created_at)} \u00b7 {c.actor}</div>
+                <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{timeAgo(c.created_at)} · {c.actor}</div>
               </div>
             ))}
             {(!changelog || changelog.length === 0) && (
@@ -363,7 +363,7 @@ function TicketDetailModal({ ticket, onClose, onUpdate }: { ticket: Ticket; onCl
           <div>
             <h2 className="text-base font-medium mb-2" style={{ color: 'var(--text-primary)' }}>{ticket.title}</h2>
             <div className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
-              Reported by <strong style={{ color: 'var(--text-primary)' }}>{ticket.reporter_name}</strong> {timeAgo(ticket.created_at)} \u00b7 last updated {timeAgo(ticket.updated_at)}
+              Reported by <strong style={{ color: 'var(--text-primary)' }}>{ticket.reporter_name}</strong> {timeAgo(ticket.created_at)} · last updated {timeAgo(ticket.updated_at)}
             </div>
           </div>
 
@@ -475,9 +475,9 @@ function TicketDetailModal({ ticket, onClose, onUpdate }: { ticket: Ticket; onCl
                 {ticketChangelog.map(c => (
                   <div key={c.id} className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
                     <span style={{ color: 'var(--text-primary)' }}>{c.actor}</span> {actionLabel(c.action)}
-                    {c.from_value && c.to_value && <> {c.from_value} \u2192 <strong style={{ color: 'var(--text-primary)' }}>{c.to_value}</strong></>}
+                    {c.from_value && c.to_value && <> {c.from_value} → <strong style={{ color: 'var(--text-primary)' }}>{c.to_value}</strong></>}
                     {!c.from_value && c.to_value && c.action === 'created' && <> as <strong style={{ color: 'var(--text-primary)' }}>{c.to_value}</strong></>}
-                    <span className="ml-1" style={{ color: 'var(--text-muted)' }}>\u00b7 {timeAgo(c.created_at)}</span>
+                    <span className="ml-1" style={{ color: 'var(--text-muted)' }}>· {timeAgo(c.created_at)}</span>
                   </div>
                 ))}
               </div>
