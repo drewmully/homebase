@@ -52,7 +52,7 @@ type Comment = {
 
 const ASSIGNEES = ['drew', 'leo', 'santy', 'jack'] as const
 const STATUSES = ['new', 'in_progress', 'blocked', 'resolved', 'wontfix'] as const
-const SEVERITIES = ['p0', 'p1', 'normal', 'low'] as const
+const SEVERITIES = ['p0', 'p1', 'p2', 'p3'] as const
 const DOMAINS = ['acquire', 'activate', 'deliver', 'allocate', 'other'] as const
 
 const DOMAIN_LABEL: Record<string, string> = {
@@ -74,6 +74,9 @@ const DOMAIN_COLOR: Record<string, string> = {
 const SEVERITY_COLOR: Record<string, string> = {
   p0: '#ef4444',
   p1: '#f59e0b',
+  p2: '#94a3b8',
+  p3: '#6b7280',
+  // legacy fallbacks
   normal: '#94a3b8',
   low: '#6b7280',
 }
